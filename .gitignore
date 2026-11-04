@@ -1,0 +1,150 @@
+# =============================================================================
+# WiiU-GP-RE — DEFAULT-DENY .gitignore
+# =============================================================================
+# Strategy: ignore EVERYTHING at the workspace root, then explicitly re-include
+# the small set of paths that are original work. A new directory, a newly
+# downloaded tarball, or a fresh `git clone` of someone else's project can never
+# be committed by accident — it stays ignored until someone deliberately adds an
+# allowlist rule below and reviews it.
+#
+# This is the inverse of the usual .gitignore (which is deny-list based and
+# therefore fails open). For a repo whose entire purpose is publishing original
+# reverse-engineering work that was developed *next to* cloned GPL/BSD trees,
+# failing closed is the only safe default.
+#
+# To publish a new path, add a `!` rule in the ALLOWLIST section and re-run:
+#     bash WiiU-tk/_meta/prepublish-audit.sh
+# =============================================================================
+
+# --- 1. DENY EVERYTHING ------------------------------------------------------
+/*
+!.gitignore
+!.gitattributes
+!README.md
+!LICENSE
+!THIRD-PARTY.md
+
+# --- 2. ALLOWLIST: original work only ---------------------------------------
+# The toolkit is self-contained: scripts, our own C/C++ test harnesses, docs,
+# and our own diffs against upstream. Nothing here is a copy of a third-party
+# source tree.
+!/WiiU-tk/
+
+# =============================================================================
+# 3. BELT AND BRACES
+# =============================================================================
+# The rules below are redundant while rule 1 is in force. They are kept as
+# documentation of *why* each path is excluded, and they keep protecting the
+# repo if somebody ever deletes the deny-all rule.
+
+# --- vendored third-party source trees (NEVER publish) ----------------------
+# pc2drc               thefloppydriver/pc2drc — GPLv2, full clone w/ our edits
+# build/hostap-2.12    hostapd — GPLv2, patched in place
+# research/*           libdrc (BSD-2), wozt-libdrc (BSD-2), barista (GPLv2),
+#                      drc-hostap (GPLv2) — all full clones with .git history
+# kernel/              Kali linux-source-7.1 (GPLv2) + .deb + build artefacts
+/pc2drc/
+/build/
+/kernel/
+/research/
+/out/
+/capture/
+/run/
+/tests/
+
+# --- console secrets and personal data (NEVER publish) ---------------------
+# pairing.env holds a live 64-hex WPA2 PSK, the console BSSID and pad MAC
+# recovered from a real WPS pairing. Leaking it lets anyone impersonate the AP.
+pairing.env
+*.env
+.env
+get_psk.conf
+psk.conf
+*_psk*
+*.key
+*.pem
+*.p12
+
+# --- local-only deny patterns for the pre-publish audit --------------------
+# This file holds the *actual* console MAC/BSSID/PSK so the audit script itself
+# can stay publishable without containing them. Must never be committed.
+.private-deny-patterns
+*.private-patterns
+
+# --- captures and binary evidence -----------------------------------------
+# The captured WPS credential-delivery frame holds the console SSID and the
+# plaintext 64-hex PSK as ASCII inside the binary record. It is a legitimately
+# interesting protocol artifact, but it is a live credential, so it stays out.
+WiiU-tk/09-rce-hunt/tables/uic-792-reply0.bin
+
+# 1.3 GB of pcaps containing a real encrypted console<->pad session, plus the
+# extracted UDP payload dumps. Not third-party *code*, but it is someone's live
+# device traffic and it bloats the repo past GitHub's limits anyway.
+*.pcap
+*.pcapng
+*.pcap.gz
+*.cap
+*.ivs
+*.h264
+*.264
+*.ts
+*.mp4
+*.mkv
+
+# --- memory images: these contain keys, MACs and pairing state -------------
+core
+core.*
+vgcore.*
+*.core
+*.dmp
+*.mem
+
+# --- build products and compiled objects -----------------------------------
+*.o
+*.ko
+*.so
+*.so.*
+*.a
+*.lo
+*.la
+*.lib
+*.exe
+*.out
+*.elf
+*.deb
+*.rpm
+*.tar
+*.tar.gz
+*.tar.xz
+*.tgz
+*.zip
+*.xz
+*.img
+*.iso
+!*.diffstat.txt
+
+# --- python / editor / OS junk --------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.bak
+*.orig
+*.rej
+
+# --- never commit nested repos or harness metadata ------------------------
+# Nested .git directories make git treat the subtree as an unstaged gitlink,
+# which silently publishes nothing while looking like it worked.
+.git/
+.gitmodules
+.agents/

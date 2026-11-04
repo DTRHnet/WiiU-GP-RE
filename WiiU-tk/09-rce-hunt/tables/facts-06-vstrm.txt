@@ -1,0 +1,99 @@
+## vstrm (port50120.bin)
+records = 73500
+UDP payload sizes: min=17 max=1710 distinct=1660 ; top 6 = ['478B x9772', '469B x9763', '299B x9762', '453B x4888', '454B x4888', '503B x4885'] ; count at max = 2827
+
+### header decode check (b0=0xF0|seq[9:6], b1=seq[5:0], b2=init|fb|ce|fe|ts|len[10:8], b3=len[7:0], ts at 4..7)
+distinct (b0>>4) values = [15] (every record starts 0xF0..0xF3)
+records where declared payload_size != len(p)-16 (ts always 1): **0** []
+
+### flag-bit combinations
+| b0>>4 | init | frame_begin | chunk_end | frame_end | ts_present | n |
+|---|---|---|---|---|---|---|
+| 0xf | 0 | 0 | 0 | 0 | 1 | 2572 |
+| 0xf | 0 | 0 | 1 | 0 | 1 | 42631 |
+| 0xf | 0 | 0 | 1 | 1 | 1 | 14136 |
+| 0xf | 0 | 1 | 0 | 0 | 1 | 231 |
+| 0xf | 0 | 1 | 1 | 0 | 1 | 13905 |
+| 0xf | 1 | 0 | 0 | 0 | 1 | 19 |
+| 0xf | 1 | 0 | 1 | 0 | 1 | 4 |
+| 0xf | 1 | 0 | 1 | 1 | 1 | 1 |
+| 0xf | 1 | 1 | 0 | 0 | 1 | 1 |
+
+init count = 25 ; frame_begin = 14137 ; chunk_end = 70677 ; frame_end = 14137
+
+### extended header (8 bytes at offset 8..15 when ts present)
+| ext bytes | n | parsed option length |
+|---|---|---|
+| `82 00 83 85 06 00 00 00` | 73454 | 5 |
+| `80 82 00 83 85 06 00 00` | 46 | 6 |
+
+### sequence number -- CORRECTED layout
+b0 = 0xF0 | seq[9:8] ; b1 = seq[7:0] ; seq = ((b0 & 0x03) << 8) | b1
+b0 value histogram = [('0xf0', 18426), ('0xf1', 18430), ('0xf2', 18430), ('0xf3', 18214)]
+b1 range = 0..255 (256 distinct values, every one used)
+min=0 max=1023 distinct=1024 ; full 1023->0 wraps = 71 ; byte-identical repeats = 72476 ; max forward jump = 134 ; max backward jump = -1023
+delta histogram = [(-1023, 71), (1, 73419), (2, 7), (3, 1), (134, 1)]
+anomalous transitions (everything except +1 and the clean 1023->0 wrap): 9 -> [(804, 938, 134), (45, 48, 3), (415, 417, 2), (662, 664, 2), (374, 376, 2), (201, 203, 2), (714, 716, 2), (31, 33, 2), (73, 75, 2)]
+b0[1:0] transition on every b1 255->0 step: [((0, 1), 72), ((1, 2), 72), ((2, 3), 72), ((3, 0), 71)]
+
+FALSIFICATION of the 4+6 layout claimed in GROUND-TRUTH sec-4 (b0=0xF0|seq[9:6], b1=seq[5:0], i.e. seq=((b0&0x0f)<<6)|(b1&0x3f)):
+  under that reading the sequence has 5 discontinuities [(-255, 71), (-63, 861), (1, 72558), (2, 7), (3, 1), (6, 1)] and only 256 distinct values (a 10-bit field must hold 1024)
+  b1 reaches 255 (287 times), so it cannot be a 6-bit field
+  the 2+8 reading yields 73419 of 73499 deltas == +1 and 71 clean 1023->0 wraps
+
+### frames (delimited by frame_end)
+frames = 14138 ; packets/frame histogram = [(1, 1), (4, 6), (5, 13332), (6, 154), (7, 170), (8, 235), (9, 54), (10, 39), (11, 36), (12, 30), (13, 12), (14, 26), (15, 38), (17, 1), (18, 2), (21, 1), (25, 1)]
+frame 0 = records 0..24 (25 packets)
+frame-0 packet payload sizes = [(510, 1), (683, 1), (714, 1), (938, 1), (1168, 1), (1710, 20)]
+frame-0 chunk data bytes = sum(payload_size) = 37813
+frame-0 chunk_end packets = 5 ; init packets = 25
+
+frame 0, packet 0 -- full 1710-byte datagram header + first 96 B:
+```
+00000000  f0 01 ce 9e 05 7c 5a 59 80 82 00 83 85 06 00 00  |.....|ZY........|
+00000010  00 be 28 80 1f a9 ff e2 0b e9 f8 d3 0f 3c b1 a6  |..(..........<..|
+00000020  8d 28 2d fc 63 31 83 d0 c4 29 26 8d cd 79 50 1e  |.(-.c1...)&..yP.|
+00000030  8a ff 42 ad 76 17 e4 bb 83 06 c1 1c 90 ce 37 87  |..B.v.........7.|
+00000040  ec 09 af 1e 98 14 f2 4f d8 89 20 24 9a 40 51 60  |.......O.. $.@Q`|
+00000050  66 65 09 fc 86 a5 79 dc 0e 79 eb ea 42 3a cd 97  |fe....y..y..B:..|
+... (1614 more bytes)
+```
+frame 0, packet 1 -- first 96 B:
+```
+00000000  f0 02 8e 9e 05 7c 5a 59 80 82 00 83 85 06 00 00  |.....|ZY........|
+00000010  27 17 28 0b e1 24 d2 e5 23 42 ac b8 32 83 9e b0  |'.(..$..#B..2...|
+00000020  85 4f a8 1f d2 5a 60 86 21 2b 51 bc 6e fc 0a 30  |.O...Z`.!+Q.n..0|
+00000030  cd 80 a7 26 24 c3 d2 6f 2d 93 52 0d 8d a6 45 d5  |...&$..o-.R...E.|
+00000040  79 d0 a3 c4 80 e3 aa c3 0a 45 54 8c ef ed 67 25  |y........ET...g%|
+00000050  68 f7 fe 3c f8 be 9f 73 0c 12 86 45 4f 77 23 22  |h..<...s...EOw#"|
+... (1614 more bytes)
+```
+frame-0 packet headers (idx, seq, init,fb,ce,fe,ts,len,timestamp,ext):
+  rec   0 seq=  1 in=1 fb=1 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   1 seq=  2 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   2 seq=  3 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   3 seq=  4 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   4 seq=  5 in=1 fb=0 ce=1 fe=0 ts=1 len= 698 t=595a7c05 ext=8082008385060000
+  rec   5 seq=  6 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   6 seq=  7 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   7 seq=  8 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   8 seq=  9 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec   9 seq= 10 in=1 fb=0 ce=1 fe=0 ts=1 len= 494 t=595a7c05 ext=8082008385060000
+  rec  10 seq= 11 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  11 seq= 12 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  12 seq= 13 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  13 seq= 14 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  14 seq= 15 in=1 fb=0 ce=1 fe=0 ts=1 len=1152 t=595a7c05 ext=8082008385060000
+  rec  15 seq= 16 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  16 seq= 17 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  17 seq= 18 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  18 seq= 19 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  19 seq= 20 in=1 fb=0 ce=1 fe=0 ts=1 len= 667 t=595a7c05 ext=8082008385060000
+  rec  20 seq= 21 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  21 seq= 22 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  22 seq= 23 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  23 seq= 24 in=1 fb=0 ce=0 fe=0 ts=1 len=1694 t=595a7c05 ext=8082008385060000
+  rec  24 seq= 25 in=1 fb=0 ce=1 fe=1 ts=1 len= 922 t=595a7c05 ext=8082008385060000
+
+timestamps present on 73500/73500 records ; ts deltas histogram = [(-3719222016, 1), (-3703439104, 1), (-3686661888, 3), (-3669884928, 1), (-3669884672, 2), (-3653107712, 3), (-3636330496, 1), (-3586064127, 2), (-3585998592, 374), (-3569221632, 1141), (-3569221376, 219), (-3552444416, 641), (-3518889728, 1), (-3502112768, 1), (-3485335552, 1), (-2826764288, 1), (0, 59362), (591462656, 1), (608239616, 3), (608239872, 9), (625016832, 27), (625017088, 12), (641794048, 36), (641794304, 2), (658571264, 12), (708837633, 11), (708903168, 1875), (725614849, 1), (725680128, 5491), (725680384, 1081), (742457344, 3160), (759234816, 2), (776012032, 1), (792788992, 4), (792789248, 1), (809566208, 11), (826343424, 2), (1434583296, 1), (1468137472, 1)]
+ts wrap (u32) events = 2393 ; first ts = 0x595a7c05 (1499102213 us) ; last = 0x6bfeb813

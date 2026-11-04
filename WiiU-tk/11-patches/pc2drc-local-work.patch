@@ -1,0 +1,3380 @@
+diff --git a/drc-hostap/hostapd/defconfig b/drc-hostap/hostapd/defconfig
+index 9b41593..ed8d9a9 100644
+--- a/drc-hostap/hostapd/defconfig
++++ b/drc-hostap/hostapd/defconfig
+@@ -27,7 +27,8 @@ CONFIG_DRIVER_NL80211=y
+ # Driver interface for FreeBSD net80211 layer (e.g., Atheros driver)
+ #CONFIG_DRIVER_BSD=y
+ CFLAGS += -I/usr/include/libnl3 -I/_123sedreplaceme/external_pkg_install_dir/include
+-LDFLAGS += -L/_123sedreplaceme/external_pkg_install_dir/lib -lssl -lcrypto -lz -ldl
++LDFLAGS += -L/_123sedreplaceme/external_pkg_install_dir/lib
++LIBS += -Wl,--start-group -lssl -lcrypto -Wl,--end-group -lz -ldl
+ CPPFLAGS += -I/_123sedreplaceme/external_pkg_install_dir/include
+ 
+ #LIBS += -L/usr/local/lib
+diff --git a/drc-hostap/src/ap/ap_drv_ops.c b/drc-hostap/src/ap/ap_drv_ops.c
+index 0dc0600..d0ca310 100644
+--- a/drc-hostap/src/ap/ap_drv_ops.c
++++ b/drc-hostap/src/ap/ap_drv_ops.c
+@@ -62,7 +62,9 @@ int hostapd_build_ap_extra_ies(struct hostapd_data *hapd,
+ 	}
+ 
+ 	pos = buf;
++#ifndef CONFIG_TENDONIN
+ 	pos = hostapd_eid_ext_capab(hapd, pos);
++#endif /* CONFIG_TENDONIN */
+ 	if (pos != buf) {
+ 		if (wpabuf_resize(&assocresp, pos - buf) != 0)
+ 			goto fail;
+diff --git a/drc-hostap/src/ap/beacon.c b/drc-hostap/src/ap/beacon.c
+index 298c0fa..6496cb0 100644
+--- a/drc-hostap/src/ap/beacon.c
++++ b/drc-hostap/src/ap/beacon.c
+@@ -295,7 +295,9 @@ static u8 * hostapd_gen_probe_resp(struct hostapd_data *hapd,
+ 	pos = hostapd_eid_ht_operation(hapd, pos);
+ #endif /* CONFIG_IEEE80211N */
+ 
++#ifndef CONFIG_TENDONIN
+ 	pos = hostapd_eid_ext_capab(hapd, pos);
++#endif /* CONFIG_TENDONIN */
+ 
+ 	pos = hostapd_eid_time_adv(hapd, pos);
+ 	pos = hostapd_eid_time_zone(hapd, pos);
+@@ -710,7 +712,9 @@ int ieee802_11_build_ap_params(struct hostapd_data *hapd,
+ 	tailpos = hostapd_eid_ht_operation(hapd, tailpos);
+ #endif /* CONFIG_IEEE80211N */
+ 
++#ifndef CONFIG_TENDONIN
+ 	tailpos = hostapd_eid_ext_capab(hapd, tailpos);
++#endif /* CONFIG_TENDONIN */
+ 
+ 	/*
+ 	 * TODO: Time Advertisement element should only be included in some
+diff --git a/drc-hostap/src/ap/ieee802_11.c b/drc-hostap/src/ap/ieee802_11.c
+index d553caa..57414d2 100644
+--- a/drc-hostap/src/ap/ieee802_11.c
++++ b/drc-hostap/src/ap/ieee802_11.c
+@@ -1185,7 +1185,9 @@ static void send_assoc_resp(struct hostapd_data *hapd, struct sta_info *sta,
+ 	p = hostapd_eid_vht_operation(hapd, p);
+ #endif /* CONFIG_IEEE80211AC */
+ 
++#ifndef CONFIG_TENDONIN
+ 	p = hostapd_eid_ext_capab(hapd, p);
++#endif /* CONFIG_TENDONIN */
+ 	p = hostapd_eid_bss_max_idle_period(hapd, p);
+ 	if (sta->qos_map_enabled)
+ 		p = hostapd_eid_qos_map_set(hapd, p);
+diff --git a/drc-hostap/src/ap/ieee802_11_ht.c b/drc-hostap/src/ap/ieee802_11_ht.c
+index 2d53648..000440d 100644
+--- a/drc-hostap/src/ap/ieee802_11_ht.c
++++ b/drc-hostap/src/ap/ieee802_11_ht.c
+@@ -39,8 +39,24 @@ u8 * hostapd_eid_ht_capabilities(struct hostapd_data *hapd, u8 *eid)
+ 
+ 	cap = (struct ieee80211_ht_capabilities *) pos;
+ 	os_memset(cap, 0, sizeof(*cap));
++#ifdef CONFIG_TENDONIN
++	/* Match the Wii U console's own beacon exactly (measured 2026-11-04 by
++	 * parsing hostapd's beacon hexdump against the decrypted real beacon in
++	 * capture/console-truth.pcap):
++	 *   HT capabilities info 0x001c  (greenfield-capable, 20 MHz, SMPS off,
++	 *                                 no short GI, no STBC, no LDPC)
++	 *   A-MPDU params        0x19    (16383 B max, 8 us minimum spacing)
++	 * The driver values we used to emit were 0x000c / 0x17, and the console's
++	 * greenfield bit was the visible difference. Barista carries the same fix
++	 * as third_party/hostapd-drc/patches/0007-hostapd-match-Wii-U-HT-advertisement.patch
++	 * and it is the only working implementation on current pad firmware.
++	 */
++	cap->ht_capabilities_info = host_to_le16(0x001c);
++	cap->a_mpdu_params = 0x19;
++#else /* CONFIG_TENDONIN */
+ 	cap->ht_capabilities_info = host_to_le16(hapd->iconf->ht_capab);
+ 	cap->a_mpdu_params = hapd->iface->current_mode->a_mpdu_params;
++#endif /* CONFIG_TENDONIN */
+ 	os_memcpy(cap->supported_mcs_set, hapd->iface->current_mode->mcs_set,
+ 		  16);
+ 
+@@ -85,7 +101,14 @@ u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid)
+ 	os_memset(oper, 0, sizeof(*oper));
+ 
+ 	oper->control_chan = hapd->iconf->channel;
++#ifdef CONFIG_TENDONIN
++	/* The console's HT Operation carries RFIS permitted (ht_param bit 3) and a
++	 * zero operation-mode word; ours advertised neither. */
++	os_memset(&oper->operation_mode, 0, sizeof(oper->operation_mode));
++	oper->ht_param = HT_INFO_HT_PARAM_RIFS_MODE;
++#else /* CONFIG_TENDONIN */
+ 	oper->operation_mode = host_to_le16(hapd->iface->ht_op_mode);
++#endif /* CONFIG_TENDONIN */
+ 	if (hapd->iconf->secondary_channel == 1)
+ 		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_ABOVE |
+ 			HT_INFO_HT_PARAM_REC_TRANS_CHNL_WIDTH;
+diff --git a/drc-hostap/wpa_supplicant/defconfig b/drc-hostap/wpa_supplicant/defconfig
+index 161ae45..c988812 100644
+--- a/drc-hostap/wpa_supplicant/defconfig
++++ b/drc-hostap/wpa_supplicant/defconfig
+@@ -18,6 +18,7 @@ LIBS += -L/_123sedreplaceme/external_pkg_install_dir/lib
+ 
+ CFLAGS += -I/usr/include/libnl3
+ LDFLAGS += -L/_123sedreplaceme/external_pkg_install_dir/lib
++LIBS += -Wl,--start-group -lssl -lcrypto -Wl,--end-group
+ CPPFLAGS += -I/_123sedreplaceme/external_pkg_install_dir/include
+ CONFIG_WPS=y
+ CONFIG_TENDONIN=y
+diff --git a/drc-x264/encoder/encoder.c b/drc-x264/encoder/encoder.c
+index e6c27b9..25e9876 100644
+--- a/drc-x264/encoder/encoder.c
++++ b/drc-x264/encoder/encoder.c
+@@ -2880,7 +2880,16 @@ cont:
+                 b_cabac_chunk_ending = 0;
+             }
+ 
+-            if( i_mb_y > 0 && (i_mb_y % 6) == 0 && i_mb_x == 0 )
++            /* DRH chunk boundary: arm ONE macroblock before the end of a 6-row
++             * group, because the flush above records the CURRENT mb_xy as the
++             * chunk's last MB. Arming at the start of the next group (the
++             * original code) made every boundary land 2 MBs late: measured
++             * i_first_mb = 0/326/650/974/1298 instead of the 0/324/648/972/1296
++             * that the pad implies (it gets no slice header and re-slices every
++             * 6 rows). Barista's working MiniH264 uses the 324MB grid
++             * (core/drh/encoder/x264/slice.h). See
++             * research/agents/encoder-conformance.md. */
++            if( (i_mb_y % 6) == 5 && i_mb_x == h->mb.i_mb_width - 2 )
+                 b_cabac_chunk_ending = 1;
+         }
+ 
+diff --git a/drc-x264/encoder/set.c b/drc-x264/encoder/set.c
+index 871cdf3..9b5c888 100644
+--- a/drc-x264/encoder/set.c
++++ b/drc-x264/encoder/set.c
+@@ -165,6 +165,10 @@ void x264_sps_init( x264_sps_t *sps, int i_id, x264_param_t *param )
+     sps->i_log2_max_frame_num = 4;
+     while( (1 << sps->i_log2_max_frame_num) <= max_frame_num )
+         sps->i_log2_max_frame_num++;
++    /* Wii U GamePad compatibility: the pad decodes against a hardcoded SPS
++     * with log2_max_frame_num_minus4 = 4 (8-bit frame_num). Any other width
++     * desynchronises every slice header and the pad rejects the stream. */
++    sps->i_log2_max_frame_num = 8;
+ 
+     sps->i_poc_type = param->i_bframe || param->b_interlaced ? 0 : 2;
+     if( sps->i_poc_type == 0 )
+diff --git a/libdrc-vnc/drcvncclient/Makefile b/libdrc-vnc/drcvncclient/Makefile
+index a2f57ed..fd2286f 100644
+--- a/libdrc-vnc/drcvncclient/Makefile
++++ b/libdrc-vnc/drcvncclient/Makefile
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.15.1 from Makefile.am.
++# Makefile.in generated by automake 1.16.1 from Makefile.am.
+ # Makefile.  Generated from Makefile.in by configure.
+ 
+-# Copyright (C) 1994-2017 Free Software Foundation, Inc.
++# Copyright (C) 1994-2018 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -132,7 +132,7 @@ am__recursive_targets = \
+   $(RECURSIVE_CLEAN_TARGETS) \
+   $(am__extra_recursive_targets)
+ AM_RECURSIVE_TARGETS = $(am__recursive_targets:-recursive=) TAGS CTAGS \
+-	cscope distdir dist dist-all distcheck
++	cscope distdir distdir-am dist dist-all distcheck
+ am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) \
+ 	$(LISP)config.h.in
+ # Read a list of newline-separated strings from the standard input,
+@@ -199,12 +199,12 @@ distuninstallcheck_listfiles = find . -type f -print
+ am__distuninstallcheck_listfiles = $(distuninstallcheck_listfiles) \
+   | sed 's|^\./|$(prefix)/|' | grep -v '$(infodir)/dir$$'
+ distcleancheck_listfiles = find . -type f -print
+-ACLOCAL = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing aclocal-1.15
++ACLOCAL = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing aclocal-1.16
+ AMTAR = $${TAR-tar}
+ AM_DEFAULT_VERBOSITY = 1
+-AUTOCONF = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing autoconf
+-AUTOHEADER = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing autoheader
+-AUTOMAKE = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing automake-1.15
++AUTOCONF = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing autoconf
++AUTOHEADER = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing autoheader
++AUTOMAKE = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing automake-1.16
+ AWK = mawk
+ CPPFLAGS = 
+ CXX = g++
+@@ -217,7 +217,6 @@ ECHO_C =
+ ECHO_N = -n
+ ECHO_T = 
+ EXEEXT = 
+-HAVE_CXX11 = 1
+ INSTALL = /usr/bin/install -c
+ INSTALL_DATA = ${INSTALL} -m 644
+ INSTALL_PROGRAM = ${INSTALL}
+@@ -227,7 +226,7 @@ LDFLAGS =
+ LIBOBJS = 
+ LIBS = 
+ LTLIBOBJS = 
+-MAKEINFO = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing makeinfo
++MAKEINFO = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing makeinfo
+ MKDIR_P = /usr/bin/mkdir -p
+ OBJEXT = o
+ PACKAGE = drcvncclient
+@@ -240,15 +239,15 @@ PACKAGE_VERSION = 1.0
+ PATH_SEPARATOR = :
+ PKG_CONFIG = /usr/bin/pkg-config
+ PKG_CONFIG_LIBDIR = 
+-PKG_CONFIG_PATH = 
++PKG_CONFIG_PATH = /work/out/libdrc/lib/pkgconfig:/work/out/x264/lib/pkgconfig
+ SET_MAKE = 
+ SHELL = /bin/bash
+ STRIP = 
+ VERSION = 1.0
+-abs_builddir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
+-abs_srcdir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
+-abs_top_builddir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
+-abs_top_srcdir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
++abs_builddir = /work/pc2drc/libdrc-vnc/drcvncclient
++abs_srcdir = /work/pc2drc/libdrc-vnc/drcvncclient
++abs_top_builddir = /work/pc2drc/libdrc-vnc/drcvncclient
++abs_top_srcdir = /work/pc2drc/libdrc-vnc/drcvncclient
+ ac_ct_CXX = g++
+ am__include = include
+ am__leading_dot = .
+@@ -267,20 +266,20 @@ host_alias =
+ htmldir = ${docdir}
+ includedir = ${prefix}/include
+ infodir = ${datarootdir}/info
+-install_sh = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/install-sh
++install_sh = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/install-sh
+ libdir = ${exec_prefix}/lib
+-libdrc_CFLAGS = -I/usr/local/include
+-libdrc_LIBS = -L/usr/local/lib -ldrc
++libdrc_CFLAGS = -I/work/out/libdrc/include
++libdrc_LIBS = -L/work/out/libdrc/lib -ldrc
+ libexecdir = ${exec_prefix}/libexec
+-libvncclient_CFLAGS = -I/usr/local/include
+-libvncclient_LIBS = -L/usr/local/lib -lvncclient
++libvncclient_CFLAGS = 
++libvncclient_LIBS = -lvncclient
+ localedir = ${datarootdir}/locale
+ localstatedir = ${prefix}/var
+ mandir = ${datarootdir}/man
+ mkdir_p = $(MKDIR_P)
+ oldincludedir = /usr/include
+ pdfdir = ${docdir}
+-prefix = /usr/local
++prefix = /work/out/bin
+ program_transform_name = s,x,x,
+ psdir = ${docdir}
+ runstatedir = ${localstatedir}/run
+@@ -294,8 +293,8 @@ target_alias =
+ top_build_prefix = 
+ top_builddir = .
+ top_srcdir = .
+-x264_CFLAGS = -I/usr/local/include
+-x264_LIBS = -L/usr/local/lib -lx264 -L/usr/local/lib -lswscale
++x264_CFLAGS = -I/work/out/x264/include
++x264_LIBS = -L/work/out/x264/lib -lx264 -lpthread -lm -ldl
+ SUBDIRS = src
+ all: config.h
+ 	$(MAKE) $(AM_MAKEFLAGS) all-recursive
+@@ -322,8 +321,8 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
+ 	    echo ' $(SHELL) ./config.status'; \
+ 	    $(SHELL) ./config.status;; \
+ 	  *) \
+-	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $@ $(am__depfiles_maybe)'; \
+-	    cd $(top_builddir) && $(SHELL) ./config.status $@ $(am__depfiles_maybe);; \
++	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $@ $(am__maybe_remake_depfiles)'; \
++	    cd $(top_builddir) && $(SHELL) ./config.status $@ $(am__maybe_remake_depfiles);; \
+ 	esac;
+ 
+ $(top_builddir)/config.status: $(top_srcdir)/configure $(CONFIG_STATUS_DEPENDENCIES)
+@@ -456,7 +455,10 @@ distclean-tags:
+ 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
+ 	-rm -f cscope.out cscope.in.out cscope.po.out cscope.files
+ 
+-distdir: $(DISTFILES)
++distdir: $(BUILT_SOURCES)
++	$(MAKE) $(AM_MAKEFLAGS) distdir-am
++
++distdir-am: $(DISTFILES)
+ 	$(am__remove_distdir)
+ 	test -d "$(distdir)" || mkdir "$(distdir)"
+ 	@srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*]/\\\\&/g'`; \
+diff --git a/libdrc-vnc/drcvncclient/config.h b/libdrc-vnc/drcvncclient/config.h
+index 963730d..94677b0 100644
+--- a/libdrc-vnc/drcvncclient/config.h
++++ b/libdrc-vnc/drcvncclient/config.h
+@@ -1,9 +1,6 @@
+ /* config.h.  Generated from config.h.in by configure.  */
+ /* config.h.in.  Generated from configure.ac by autoheader.  */
+ 
+-/* define if the compiler supports basic C++11 syntax */
+-#define HAVE_CXX11 1
+-
+ /* Name of package */
+ #define PACKAGE "drcvncclient"
+ 
+diff --git a/libdrc-vnc/drcvncclient/config.h.in b/libdrc-vnc/drcvncclient/config.h.in
+index abe9230..dd3b02c 100644
+--- a/libdrc-vnc/drcvncclient/config.h.in
++++ b/libdrc-vnc/drcvncclient/config.h.in
+@@ -1,8 +1,5 @@
+ /* config.h.in.  Generated from configure.ac by autoheader.  */
+ 
+-/* define if the compiler supports basic C++11 syntax */
+-#undef HAVE_CXX11
+-
+ /* Name of package */
+ #undef PACKAGE
+ 
+diff --git a/libdrc-vnc/drcvncclient/src/.deps/drcvncclient.Po b/libdrc-vnc/drcvncclient/src/.deps/drcvncclient.Po
+index 7d4d3e0..9b92860 100644
+--- a/libdrc-vnc/drcvncclient/src/.deps/drcvncclient.Po
++++ b/libdrc-vnc/drcvncclient/src/.deps/drcvncclient.Po
+@@ -188,14 +188,29 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+  /usr/include/x86_64-linux-gnu/bits/ss_flags.h \
+  /usr/include/x86_64-linux-gnu/bits/types/struct_sigstack.h \
+  /usr/include/x86_64-linux-gnu/bits/sigthread.h \
+- /usr/include/x86_64-linux-gnu/bits/signal_ext.h /usr/include/c++/9/map \
+- /usr/include/c++/9/bits/stl_tree.h \
++ /usr/include/x86_64-linux-gnu/bits/signal_ext.h /usr/include/unistd.h \
++ /usr/include/x86_64-linux-gnu/bits/posix_opt.h \
++ /usr/include/x86_64-linux-gnu/bits/environments.h \
++ /usr/include/x86_64-linux-gnu/bits/confname.h \
++ /usr/include/x86_64-linux-gnu/bits/getopt_posix.h \
++ /usr/include/x86_64-linux-gnu/bits/getopt_core.h \
++ /usr/include/x86_64-linux-gnu/bits/unistd.h \
++ /usr/include/x86_64-linux-gnu/bits/unistd_ext.h \
++ /usr/include/c++/9/thread /usr/include/c++/9/chrono \
++ /usr/include/c++/9/ratio /usr/include/c++/9/type_traits \
++ /usr/include/c++/9/cstdint /usr/include/c++/9/limits \
++ /usr/include/c++/9/ctime /usr/include/time.h \
++ /usr/include/x86_64-linux-gnu/bits/time.h \
++ /usr/include/x86_64-linux-gnu/bits/timex.h \
++ /usr/include/x86_64-linux-gnu/bits/types/struct_tm.h \
++ /usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h \
++ /usr/include/c++/9/bits/parse_numbers.h /usr/include/c++/9/memory \
+  /usr/include/c++/9/bits/stl_algobase.h \
+  /usr/include/c++/9/bits/functexcept.h \
+  /usr/include/c++/9/bits/exception_defines.h \
+  /usr/include/c++/9/ext/numeric_traits.h \
+  /usr/include/c++/9/bits/stl_pair.h /usr/include/c++/9/bits/move.h \
+- /usr/include/c++/9/bits/concept_check.h /usr/include/c++/9/type_traits \
++ /usr/include/c++/9/bits/concept_check.h \
+  /usr/include/c++/9/bits/stl_iterator_base_types.h \
+  /usr/include/c++/9/bits/stl_iterator_base_funcs.h \
+  /usr/include/c++/9/debug/assertions.h \
+@@ -211,39 +226,39 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+  /usr/include/c++/9/typeinfo /usr/include/c++/9/bits/hash_bytes.h \
+  /usr/include/c++/9/bits/nested_exception.h \
+  /usr/include/c++/9/bits/memoryfwd.h \
+- /usr/include/c++/9/bits/stl_function.h \
+- /usr/include/c++/9/backward/binders.h \
++ /usr/include/c++/9/bits/stl_construct.h \
+  /usr/include/c++/9/ext/alloc_traits.h \
+  /usr/include/c++/9/bits/alloc_traits.h \
+- /usr/include/c++/9/ext/aligned_buffer.h \
+- /usr/include/c++/9/bits/stl_map.h /usr/include/c++/9/initializer_list \
+- /usr/include/c++/9/tuple /usr/include/c++/9/utility \
+- /usr/include/c++/9/bits/stl_relops.h /usr/include/c++/9/array \
+- /usr/include/c++/9/stdexcept /usr/include/c++/9/string \
+- /usr/include/c++/9/bits/stringfwd.h \
+- /usr/include/c++/9/bits/char_traits.h /usr/include/c++/9/bits/postypes.h \
+- /usr/include/c++/9/cwchar /usr/include/c++/9/cstdint \
+- /usr/include/c++/9/bits/localefwd.h \
+- /usr/include/x86_64-linux-gnu/c++/9/bits/c++locale.h \
+- /usr/include/c++/9/clocale /usr/include/locale.h \
+- /usr/include/x86_64-linux-gnu/bits/locale.h /usr/include/c++/9/iosfwd \
+- /usr/include/c++/9/cctype /usr/include/c++/9/bits/ostream_insert.h \
+- /usr/include/c++/9/bits/cxxabi_forced.h \
+- /usr/include/c++/9/bits/range_access.h \
+- /usr/include/c++/9/bits/basic_string.h \
+- /usr/include/c++/9/ext/atomicity.h \
++ /usr/include/c++/9/bits/stl_uninitialized.h \
++ /usr/include/c++/9/bits/stl_tempbuf.h \
++ /usr/include/c++/9/bits/stl_raw_storage_iter.h /usr/include/c++/9/iosfwd \
++ /usr/include/c++/9/bits/stringfwd.h /usr/include/c++/9/bits/postypes.h \
++ /usr/include/c++/9/cwchar /usr/include/c++/9/ext/atomicity.h \
+  /usr/include/x86_64-linux-gnu/c++/9/bits/gthr.h \
+  /usr/include/x86_64-linux-gnu/c++/9/bits/gthr-default.h \
+  /usr/include/pthread.h /usr/include/sched.h \
+  /usr/include/x86_64-linux-gnu/bits/sched.h \
+  /usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h \
+- /usr/include/x86_64-linux-gnu/bits/cpu-set.h /usr/include/time.h \
+- /usr/include/x86_64-linux-gnu/bits/time.h \
+- /usr/include/x86_64-linux-gnu/bits/timex.h \
+- /usr/include/x86_64-linux-gnu/bits/types/struct_tm.h \
+- /usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h \
++ /usr/include/x86_64-linux-gnu/bits/cpu-set.h \
+  /usr/include/x86_64-linux-gnu/bits/setjmp.h \
+  /usr/include/x86_64-linux-gnu/c++/9/bits/atomic_word.h \
++ /usr/include/c++/9/ext/concurrence.h \
++ /usr/include/c++/9/bits/stl_function.h \
++ /usr/include/c++/9/backward/binders.h \
++ /usr/include/c++/9/bits/uses_allocator.h \
++ /usr/include/c++/9/bits/unique_ptr.h /usr/include/c++/9/utility \
++ /usr/include/c++/9/bits/stl_relops.h /usr/include/c++/9/initializer_list \
++ /usr/include/c++/9/tuple /usr/include/c++/9/array \
++ /usr/include/c++/9/stdexcept /usr/include/c++/9/string \
++ /usr/include/c++/9/bits/char_traits.h \
++ /usr/include/c++/9/bits/localefwd.h \
++ /usr/include/x86_64-linux-gnu/c++/9/bits/c++locale.h \
++ /usr/include/c++/9/clocale /usr/include/locale.h \
++ /usr/include/x86_64-linux-gnu/bits/locale.h /usr/include/c++/9/cctype \
++ /usr/include/c++/9/bits/ostream_insert.h \
++ /usr/include/c++/9/bits/cxxabi_forced.h \
++ /usr/include/c++/9/bits/range_access.h \
++ /usr/include/c++/9/bits/basic_string.h \
+  /usr/include/c++/9/ext/string_conversions.h /usr/include/c++/9/cstdio \
+  /usr/include/c++/9/cerrno /usr/include/errno.h \
+  /usr/include/x86_64-linux-gnu/bits/errno.h /usr/include/linux/errno.h \
+@@ -252,46 +267,40 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+  /usr/include/x86_64-linux-gnu/bits/types/error_t.h \
+  /usr/include/c++/9/bits/functional_hash.h \
+  /usr/include/c++/9/bits/basic_string.tcc \
+- /usr/include/c++/9/bits/uses_allocator.h \
+- /usr/include/c++/9/bits/invoke.h /usr/include/c++/9/bits/stl_multimap.h \
+- /usr/include/c++/9/bits/erase_if.h /usr/local/include/drc/input.h \
+- /usr/include/c++/9/cstring /usr/local/include/drc/types.h \
+- /usr/include/c++/9/vector /usr/include/c++/9/bits/stl_construct.h \
+- /usr/include/c++/9/bits/stl_uninitialized.h \
+- /usr/include/c++/9/bits/stl_vector.h \
+- /usr/include/c++/9/bits/stl_bvector.h /usr/include/c++/9/bits/vector.tcc \
+- /usr/local/include/drc/screen.h /usr/local/include/drc/streamer.h \
+- /usr/local/include/drc/video-frame-rate.h \
+- /usr/local/include/drc/pixel-format.h /usr/include/c++/9/functional \
+- /usr/include/c++/9/bits/refwrap.h /usr/include/c++/9/bits/std_function.h \
+- /usr/include/c++/9/memory /usr/include/c++/9/bits/stl_tempbuf.h \
+- /usr/include/c++/9/bits/stl_raw_storage_iter.h \
+- /usr/include/c++/9/ext/concurrence.h \
+- /usr/include/c++/9/bits/unique_ptr.h \
+- /usr/include/c++/9/bits/shared_ptr.h \
++ /usr/include/c++/9/bits/invoke.h /usr/include/c++/9/bits/shared_ptr.h \
+  /usr/include/c++/9/bits/shared_ptr_base.h \
+  /usr/include/c++/9/bits/allocated_ptr.h \
++ /usr/include/c++/9/bits/refwrap.h \
++ /usr/include/c++/9/ext/aligned_buffer.h \
+  /usr/include/c++/9/bits/shared_ptr_atomic.h \
+  /usr/include/c++/9/bits/atomic_base.h \
+  /usr/include/c++/9/bits/atomic_lockfree_defines.h \
+- /usr/include/c++/9/backward/auto_ptr.h \
+- /usr/local/include/rfb/rfbclient.h /usr/local/include/rfb/rfbproto.h \
+- /usr/local/include/rfb/rfbconfig.h /usr/include/zlib.h \
+- /usr/include/zconf.h /usr/lib/gcc/x86_64-linux-gnu/9/include/limits.h \
++ /usr/include/c++/9/backward/auto_ptr.h /usr/include/c++/9/mutex \
++ /usr/include/c++/9/system_error \
++ /usr/include/x86_64-linux-gnu/c++/9/bits/error_constants.h \
++ /usr/include/c++/9/bits/std_mutex.h \
++ /usr/include/c++/9/bits/unique_lock.h /usr/include/c++/9/atomic \
++ /usr/include/c++/9/map /usr/include/c++/9/bits/stl_tree.h \
++ /usr/include/c++/9/bits/stl_map.h /usr/include/c++/9/bits/stl_multimap.h \
++ /usr/include/c++/9/bits/erase_if.h /work/out/libdrc/include/drc/input.h \
++ /usr/include/c++/9/cstring /work/out/libdrc/include/drc/types.h \
++ /usr/include/c++/9/vector /usr/include/c++/9/bits/stl_vector.h \
++ /usr/include/c++/9/bits/stl_bvector.h /usr/include/c++/9/bits/vector.tcc \
++ /work/out/libdrc/include/drc/screen.h \
++ /work/out/libdrc/include/drc/streamer.h \
++ /work/out/libdrc/include/drc/video-frame-rate.h \
++ /work/out/libdrc/include/drc/pixel-format.h \
++ /usr/include/c++/9/functional /usr/include/c++/9/bits/std_function.h \
++ /usr/include/rfb/rfbclient.h /usr/include/rfb/rfbproto.h \
++ /usr/include/rfb/rfbconfig.h /usr/include/zlib.h /usr/include/zconf.h \
++ /usr/lib/gcc/x86_64-linux-gnu/9/include/limits.h \
+  /usr/lib/gcc/x86_64-linux-gnu/9/include/syslimits.h \
+  /usr/include/limits.h /usr/include/x86_64-linux-gnu/bits/posix1_lim.h \
+  /usr/include/x86_64-linux-gnu/bits/local_lim.h \
+  /usr/include/linux/limits.h \
+  /usr/include/x86_64-linux-gnu/bits/posix2_lim.h \
+  /usr/include/x86_64-linux-gnu/bits/xopen_lim.h \
+- /usr/include/x86_64-linux-gnu/bits/uio_lim.h /usr/include/unistd.h \
+- /usr/include/x86_64-linux-gnu/bits/posix_opt.h \
+- /usr/include/x86_64-linux-gnu/bits/environments.h \
+- /usr/include/x86_64-linux-gnu/bits/confname.h \
+- /usr/include/x86_64-linux-gnu/bits/getopt_posix.h \
+- /usr/include/x86_64-linux-gnu/bits/getopt_core.h \
+- /usr/include/x86_64-linux-gnu/bits/unistd.h \
+- /usr/include/x86_64-linux-gnu/bits/unistd_ext.h \
++ /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
+  /usr/include/x86_64-linux-gnu/sys/time.h /usr/include/netinet/in.h \
+  /usr/include/x86_64-linux-gnu/sys/socket.h \
+  /usr/include/x86_64-linux-gnu/bits/types/struct_iovec.h \
+@@ -310,8 +319,8 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+  /usr/include/asm-generic/sockios.h \
+  /usr/include/x86_64-linux-gnu/bits/types/struct_osockaddr.h \
+  /usr/include/x86_64-linux-gnu/bits/socket2.h \
+- /usr/include/x86_64-linux-gnu/bits/in.h /usr/local/include/rfb/keysym.h \
+- /usr/local/include/rfb/threading.h
++ /usr/include/x86_64-linux-gnu/bits/in.h /usr/include/rfb/keysym.h \
++ /usr/include/sasl/sasl.h /usr/include/sasl/prop.h
+ 
+ /usr/include/stdc-predef.h:
+ 
+@@ -767,9 +776,49 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/x86_64-linux-gnu/bits/signal_ext.h:
+ 
+-/usr/include/c++/9/map:
++/usr/include/unistd.h:
+ 
+-/usr/include/c++/9/bits/stl_tree.h:
++/usr/include/x86_64-linux-gnu/bits/posix_opt.h:
++
++/usr/include/x86_64-linux-gnu/bits/environments.h:
++
++/usr/include/x86_64-linux-gnu/bits/confname.h:
++
++/usr/include/x86_64-linux-gnu/bits/getopt_posix.h:
++
++/usr/include/x86_64-linux-gnu/bits/getopt_core.h:
++
++/usr/include/x86_64-linux-gnu/bits/unistd.h:
++
++/usr/include/x86_64-linux-gnu/bits/unistd_ext.h:
++
++/usr/include/c++/9/thread:
++
++/usr/include/c++/9/chrono:
++
++/usr/include/c++/9/ratio:
++
++/usr/include/c++/9/type_traits:
++
++/usr/include/c++/9/cstdint:
++
++/usr/include/c++/9/limits:
++
++/usr/include/c++/9/ctime:
++
++/usr/include/time.h:
++
++/usr/include/x86_64-linux-gnu/bits/time.h:
++
++/usr/include/x86_64-linux-gnu/bits/timex.h:
++
++/usr/include/x86_64-linux-gnu/bits/types/struct_tm.h:
++
++/usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h:
++
++/usr/include/c++/9/bits/parse_numbers.h:
++
++/usr/include/c++/9/memory:
+ 
+ /usr/include/c++/9/bits/stl_algobase.h:
+ 
+@@ -785,8 +834,6 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/c++/9/bits/concept_check.h:
+ 
+-/usr/include/c++/9/type_traits:
+-
+ /usr/include/c++/9/bits/stl_iterator_base_types.h:
+ 
+ /usr/include/c++/9/bits/stl_iterator_base_funcs.h:
+@@ -825,93 +872,91 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/c++/9/bits/memoryfwd.h:
+ 
+-/usr/include/c++/9/bits/stl_function.h:
+-
+-/usr/include/c++/9/backward/binders.h:
++/usr/include/c++/9/bits/stl_construct.h:
+ 
+ /usr/include/c++/9/ext/alloc_traits.h:
+ 
+ /usr/include/c++/9/bits/alloc_traits.h:
+ 
+-/usr/include/c++/9/ext/aligned_buffer.h:
++/usr/include/c++/9/bits/stl_uninitialized.h:
+ 
+-/usr/include/c++/9/bits/stl_map.h:
++/usr/include/c++/9/bits/stl_tempbuf.h:
+ 
+-/usr/include/c++/9/initializer_list:
++/usr/include/c++/9/bits/stl_raw_storage_iter.h:
+ 
+-/usr/include/c++/9/tuple:
++/usr/include/c++/9/iosfwd:
+ 
+-/usr/include/c++/9/utility:
++/usr/include/c++/9/bits/stringfwd.h:
+ 
+-/usr/include/c++/9/bits/stl_relops.h:
++/usr/include/c++/9/bits/postypes.h:
+ 
+-/usr/include/c++/9/array:
++/usr/include/c++/9/cwchar:
+ 
+-/usr/include/c++/9/stdexcept:
++/usr/include/c++/9/ext/atomicity.h:
+ 
+-/usr/include/c++/9/string:
++/usr/include/x86_64-linux-gnu/c++/9/bits/gthr.h:
+ 
+-/usr/include/c++/9/bits/stringfwd.h:
++/usr/include/x86_64-linux-gnu/c++/9/bits/gthr-default.h:
+ 
+-/usr/include/c++/9/bits/char_traits.h:
++/usr/include/pthread.h:
+ 
+-/usr/include/c++/9/bits/postypes.h:
++/usr/include/sched.h:
+ 
+-/usr/include/c++/9/cwchar:
++/usr/include/x86_64-linux-gnu/bits/sched.h:
+ 
+-/usr/include/c++/9/cstdint:
++/usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h:
+ 
+-/usr/include/c++/9/bits/localefwd.h:
++/usr/include/x86_64-linux-gnu/bits/cpu-set.h:
+ 
+-/usr/include/x86_64-linux-gnu/c++/9/bits/c++locale.h:
++/usr/include/x86_64-linux-gnu/bits/setjmp.h:
+ 
+-/usr/include/c++/9/clocale:
++/usr/include/x86_64-linux-gnu/c++/9/bits/atomic_word.h:
+ 
+-/usr/include/locale.h:
++/usr/include/c++/9/ext/concurrence.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/locale.h:
++/usr/include/c++/9/bits/stl_function.h:
+ 
+-/usr/include/c++/9/iosfwd:
++/usr/include/c++/9/backward/binders.h:
+ 
+-/usr/include/c++/9/cctype:
++/usr/include/c++/9/bits/uses_allocator.h:
+ 
+-/usr/include/c++/9/bits/ostream_insert.h:
++/usr/include/c++/9/bits/unique_ptr.h:
+ 
+-/usr/include/c++/9/bits/cxxabi_forced.h:
++/usr/include/c++/9/utility:
+ 
+-/usr/include/c++/9/bits/range_access.h:
++/usr/include/c++/9/bits/stl_relops.h:
+ 
+-/usr/include/c++/9/bits/basic_string.h:
++/usr/include/c++/9/initializer_list:
+ 
+-/usr/include/c++/9/ext/atomicity.h:
++/usr/include/c++/9/tuple:
+ 
+-/usr/include/x86_64-linux-gnu/c++/9/bits/gthr.h:
++/usr/include/c++/9/array:
+ 
+-/usr/include/x86_64-linux-gnu/c++/9/bits/gthr-default.h:
++/usr/include/c++/9/stdexcept:
+ 
+-/usr/include/pthread.h:
++/usr/include/c++/9/string:
+ 
+-/usr/include/sched.h:
++/usr/include/c++/9/bits/char_traits.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/sched.h:
++/usr/include/c++/9/bits/localefwd.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h:
++/usr/include/x86_64-linux-gnu/c++/9/bits/c++locale.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/cpu-set.h:
++/usr/include/c++/9/clocale:
+ 
+-/usr/include/time.h:
++/usr/include/locale.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/time.h:
++/usr/include/x86_64-linux-gnu/bits/locale.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/timex.h:
++/usr/include/c++/9/cctype:
+ 
+-/usr/include/x86_64-linux-gnu/bits/types/struct_tm.h:
++/usr/include/c++/9/bits/ostream_insert.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h:
++/usr/include/c++/9/bits/cxxabi_forced.h:
+ 
+-/usr/include/x86_64-linux-gnu/bits/setjmp.h:
++/usr/include/c++/9/bits/range_access.h:
+ 
+-/usr/include/x86_64-linux-gnu/c++/9/bits/atomic_word.h:
++/usr/include/c++/9/bits/basic_string.h:
+ 
+ /usr/include/c++/9/ext/string_conversions.h:
+ 
+@@ -937,75 +982,79 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/c++/9/bits/basic_string.tcc:
+ 
+-/usr/include/c++/9/bits/uses_allocator.h:
+-
+ /usr/include/c++/9/bits/invoke.h:
+ 
+-/usr/include/c++/9/bits/stl_multimap.h:
++/usr/include/c++/9/bits/shared_ptr.h:
+ 
+-/usr/include/c++/9/bits/erase_if.h:
++/usr/include/c++/9/bits/shared_ptr_base.h:
++
++/usr/include/c++/9/bits/allocated_ptr.h:
+ 
+-/usr/local/include/drc/input.h:
++/usr/include/c++/9/bits/refwrap.h:
+ 
+-/usr/include/c++/9/cstring:
++/usr/include/c++/9/ext/aligned_buffer.h:
+ 
+-/usr/local/include/drc/types.h:
++/usr/include/c++/9/bits/shared_ptr_atomic.h:
+ 
+-/usr/include/c++/9/vector:
++/usr/include/c++/9/bits/atomic_base.h:
+ 
+-/usr/include/c++/9/bits/stl_construct.h:
++/usr/include/c++/9/bits/atomic_lockfree_defines.h:
+ 
+-/usr/include/c++/9/bits/stl_uninitialized.h:
++/usr/include/c++/9/backward/auto_ptr.h:
+ 
+-/usr/include/c++/9/bits/stl_vector.h:
++/usr/include/c++/9/mutex:
+ 
+-/usr/include/c++/9/bits/stl_bvector.h:
++/usr/include/c++/9/system_error:
+ 
+-/usr/include/c++/9/bits/vector.tcc:
++/usr/include/x86_64-linux-gnu/c++/9/bits/error_constants.h:
+ 
+-/usr/local/include/drc/screen.h:
++/usr/include/c++/9/bits/std_mutex.h:
+ 
+-/usr/local/include/drc/streamer.h:
++/usr/include/c++/9/bits/unique_lock.h:
+ 
+-/usr/local/include/drc/video-frame-rate.h:
++/usr/include/c++/9/atomic:
+ 
+-/usr/local/include/drc/pixel-format.h:
++/usr/include/c++/9/map:
+ 
+-/usr/include/c++/9/functional:
++/usr/include/c++/9/bits/stl_tree.h:
+ 
+-/usr/include/c++/9/bits/refwrap.h:
++/usr/include/c++/9/bits/stl_map.h:
+ 
+-/usr/include/c++/9/bits/std_function.h:
++/usr/include/c++/9/bits/stl_multimap.h:
+ 
+-/usr/include/c++/9/memory:
++/usr/include/c++/9/bits/erase_if.h:
+ 
+-/usr/include/c++/9/bits/stl_tempbuf.h:
++/work/out/libdrc/include/drc/input.h:
+ 
+-/usr/include/c++/9/bits/stl_raw_storage_iter.h:
++/usr/include/c++/9/cstring:
+ 
+-/usr/include/c++/9/ext/concurrence.h:
++/work/out/libdrc/include/drc/types.h:
+ 
+-/usr/include/c++/9/bits/unique_ptr.h:
++/usr/include/c++/9/vector:
+ 
+-/usr/include/c++/9/bits/shared_ptr.h:
++/usr/include/c++/9/bits/stl_vector.h:
+ 
+-/usr/include/c++/9/bits/shared_ptr_base.h:
++/usr/include/c++/9/bits/stl_bvector.h:
+ 
+-/usr/include/c++/9/bits/allocated_ptr.h:
++/usr/include/c++/9/bits/vector.tcc:
+ 
+-/usr/include/c++/9/bits/shared_ptr_atomic.h:
++/work/out/libdrc/include/drc/screen.h:
+ 
+-/usr/include/c++/9/bits/atomic_base.h:
++/work/out/libdrc/include/drc/streamer.h:
+ 
+-/usr/include/c++/9/bits/atomic_lockfree_defines.h:
++/work/out/libdrc/include/drc/video-frame-rate.h:
+ 
+-/usr/include/c++/9/backward/auto_ptr.h:
++/work/out/libdrc/include/drc/pixel-format.h:
++
++/usr/include/c++/9/functional:
+ 
+-/usr/local/include/rfb/rfbclient.h:
++/usr/include/c++/9/bits/std_function.h:
+ 
+-/usr/local/include/rfb/rfbproto.h:
++/usr/include/rfb/rfbclient.h:
+ 
+-/usr/local/include/rfb/rfbconfig.h:
++/usr/include/rfb/rfbproto.h:
++
++/usr/include/rfb/rfbconfig.h:
+ 
+ /usr/include/zlib.h:
+ 
+@@ -1029,22 +1078,6 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/x86_64-linux-gnu/bits/uio_lim.h:
+ 
+-/usr/include/unistd.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/posix_opt.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/environments.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/confname.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/getopt_posix.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/getopt_core.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/unistd.h:
+-
+-/usr/include/x86_64-linux-gnu/bits/unistd_ext.h:
+-
+ /usr/include/x86_64-linux-gnu/sys/time.h:
+ 
+ /usr/include/netinet/in.h:
+@@ -1087,6 +1120,8 @@ drcvncclient.o: drcvncclient.cpp /usr/include/stdc-predef.h \
+ 
+ /usr/include/x86_64-linux-gnu/bits/in.h:
+ 
+-/usr/local/include/rfb/keysym.h:
++/usr/include/rfb/keysym.h:
++
++/usr/include/sasl/sasl.h:
+ 
+-/usr/local/include/rfb/threading.h:
++/usr/include/sasl/prop.h:
+diff --git a/libdrc-vnc/drcvncclient/src/Makefile b/libdrc-vnc/drcvncclient/src/Makefile
+index b7da8db..a9dca8c 100644
+--- a/libdrc-vnc/drcvncclient/src/Makefile
++++ b/libdrc-vnc/drcvncclient/src/Makefile
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.15.1 from Makefile.am.
++# Makefile.in generated by automake 1.16.1 from Makefile.am.
+ # src/Makefile.  Generated from Makefile.in by configure.
+ 
+-# Copyright (C) 1994-2017 Free Software Foundation, Inc.
++# Copyright (C) 1994-2018 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -116,7 +116,8 @@ am__v_at_0 = @
+ am__v_at_1 = 
+ DEFAULT_INCLUDES = -I. -I$(top_builddir)
+ depcomp = $(SHELL) $(top_srcdir)/depcomp
+-am__depfiles_maybe = depfiles
++am__maybe_remake_depfiles = depfiles
++am__depfiles_remade = ./$(DEPDIR)/drcvncclient.Po
+ am__mv = mv -f
+ CXXCOMPILE = $(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) \
+ 	$(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS)
+@@ -159,12 +160,12 @@ ETAGS = etags
+ CTAGS = ctags
+ am__DIST_COMMON = $(srcdir)/Makefile.in $(top_srcdir)/depcomp
+ DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
+-ACLOCAL = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing aclocal-1.15
++ACLOCAL = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing aclocal-1.16
+ AMTAR = $${TAR-tar}
+ AM_DEFAULT_VERBOSITY = 1
+-AUTOCONF = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing autoconf
+-AUTOHEADER = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing autoheader
+-AUTOMAKE = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing automake-1.15
++AUTOCONF = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing autoconf
++AUTOHEADER = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing autoheader
++AUTOMAKE = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing automake-1.16
+ AWK = mawk
+ CPPFLAGS = 
+ CXX = g++
+@@ -177,7 +178,6 @@ ECHO_C =
+ ECHO_N = -n
+ ECHO_T = 
+ EXEEXT = 
+-HAVE_CXX11 = 1
+ INSTALL = /usr/bin/install -c
+ INSTALL_DATA = ${INSTALL} -m 644
+ INSTALL_PROGRAM = ${INSTALL}
+@@ -188,7 +188,7 @@ LIBOBJS =
+ LIBS =  $(sdl2_LIBS) $(libvncclient_LIBS) $(libdrc_LIBS) \
+ 	$(x264_LIBS)
+ LTLIBOBJS = 
+-MAKEINFO = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/missing makeinfo
++MAKEINFO = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/missing makeinfo
+ MKDIR_P = /usr/bin/mkdir -p
+ OBJEXT = o
+ PACKAGE = drcvncclient
+@@ -201,15 +201,15 @@ PACKAGE_VERSION = 1.0
+ PATH_SEPARATOR = :
+ PKG_CONFIG = /usr/bin/pkg-config
+ PKG_CONFIG_LIBDIR = 
+-PKG_CONFIG_PATH = 
++PKG_CONFIG_PATH = /work/out/libdrc/lib/pkgconfig:/work/out/x264/lib/pkgconfig
+ SET_MAKE = 
+ SHELL = /bin/bash
+ STRIP = 
+ VERSION = 1.0
+-abs_builddir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/src
+-abs_srcdir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/src
+-abs_top_builddir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
+-abs_top_srcdir = /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient
++abs_builddir = /work/pc2drc/libdrc-vnc/drcvncclient/src
++abs_srcdir = /work/pc2drc/libdrc-vnc/drcvncclient/src
++abs_top_builddir = /work/pc2drc/libdrc-vnc/drcvncclient
++abs_top_srcdir = /work/pc2drc/libdrc-vnc/drcvncclient
+ ac_ct_CXX = g++
+ am__include = include
+ am__leading_dot = .
+@@ -228,20 +228,20 @@ host_alias =
+ htmldir = ${docdir}
+ includedir = ${prefix}/include
+ infodir = ${datarootdir}/info
+-install_sh = ${SHELL} /home/thefloppydriver/Documents/bring-back-libdrc/pc2drc/libdrc-vnc/drcvncclient/install-sh
++install_sh = ${SHELL} /work/pc2drc/libdrc-vnc/drcvncclient/install-sh
+ libdir = ${exec_prefix}/lib
+-libdrc_CFLAGS = -I/usr/local/include
+-libdrc_LIBS = -L/usr/local/lib -ldrc
++libdrc_CFLAGS = -I/work/out/libdrc/include
++libdrc_LIBS = -L/work/out/libdrc/lib -ldrc
+ libexecdir = ${exec_prefix}/libexec
+-libvncclient_CFLAGS = -I/usr/local/include
+-libvncclient_LIBS = -L/usr/local/lib -lvncclient
++libvncclient_CFLAGS = 
++libvncclient_LIBS = -lvncclient
+ localedir = ${datarootdir}/locale
+ localstatedir = ${prefix}/var
+ mandir = ${datarootdir}/man
+ mkdir_p = $(MKDIR_P)
+ oldincludedir = /usr/include
+ pdfdir = ${docdir}
+-prefix = /usr/local
++prefix = /work/out/bin
+ program_transform_name = s,x,x,
+ psdir = ${docdir}
+ runstatedir = ${localstatedir}/run
+@@ -255,8 +255,8 @@ target_alias =
+ top_build_prefix = ../
+ top_builddir = ..
+ top_srcdir = ..
+-x264_CFLAGS = -I/usr/local/include
+-x264_LIBS = -L/usr/local/lib -lx264 -L/usr/local/lib -lswscale
++x264_CFLAGS = -I/work/out/x264/include
++x264_LIBS = -L/work/out/x264/lib -lx264 -lpthread -lm -ldl
+ AM_CXXFLAGS = $(sdl2_CFLAGS) $(libvncclient_CFLAGS) $(libdrc_CFLAGS) \
+               $(x264_CFLAGS)
+ 
+@@ -282,8 +282,8 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
+ 	  *config.status*) \
+ 	    cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh;; \
+ 	  *) \
+-	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__depfiles_maybe)'; \
+-	    cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__depfiles_maybe);; \
++	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles)'; \
++	    cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles);; \
+ 	esac;
+ 
+ $(top_builddir)/config.status: $(top_srcdir)/configure $(CONFIG_STATUS_DEPENDENCIES)
+@@ -347,7 +347,13 @@ mostlyclean-compile:
+ distclean-compile:
+ 	-rm -f *.tab.c
+ 
+-include ./$(DEPDIR)/drcvncclient.Po
++include ./$(DEPDIR)/drcvncclient.Po # am--include-marker
++
++$(am__depfiles_remade):
++	@$(MKDIR_P) $(@D)
++	@echo '# dummy' >$@-t && $(am__mv) $@-t $@
++
++am--depfiles: $(am__depfiles_remade)
+ 
+ .cpp.o:
+ 	$(AM_V_CXX)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\
+@@ -417,7 +423,10 @@ cscopelist-am: $(am__tagged_files)
+ distclean-tags:
+ 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
+ 
+-distdir: $(DISTFILES)
++distdir: $(BUILT_SOURCES)
++	$(MAKE) $(AM_MAKEFLAGS) distdir-am
++
++distdir-am: $(DISTFILES)
+ 	@srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*]/\\\\&/g'`; \
+ 	topsrcdirstrip=`echo "$(top_srcdir)" | sed 's/[].[^$$\\*]/\\\\&/g'`; \
+ 	list='$(DISTFILES)'; \
+@@ -489,7 +498,7 @@ clean: clean-am
+ clean-am: clean-binPROGRAMS clean-generic mostlyclean-am
+ 
+ distclean: distclean-am
+-	-rm -rf ./$(DEPDIR)
++		-rm -f ./$(DEPDIR)/drcvncclient.Po
+ 	-rm -f Makefile
+ distclean-am: clean-am distclean-compile distclean-generic \
+ 	distclean-tags
+@@ -535,7 +544,7 @@ install-ps-am:
+ installcheck-am:
+ 
+ maintainer-clean: maintainer-clean-am
+-	-rm -rf ./$(DEPDIR)
++		-rm -f ./$(DEPDIR)/drcvncclient.Po
+ 	-rm -f Makefile
+ maintainer-clean-am: distclean-am maintainer-clean-generic
+ 
+@@ -555,7 +564,7 @@ uninstall-am: uninstall-binPROGRAMS
+ 
+ .MAKE: install-am install-strip
+ 
+-.PHONY: CTAGS GTAGS TAGS all all-am check check-am clean \
++.PHONY: CTAGS GTAGS TAGS all all-am am--depfiles check check-am clean \
+ 	clean-binPROGRAMS clean-generic cscopelist-am ctags ctags-am \
+ 	distclean distclean-compile distclean-generic distclean-tags \
+ 	distdir dvi dvi-am html html-am info info-am install \
+diff --git a/libdrc-vnc/drcvncclient/src/drcvncclient.cpp b/libdrc-vnc/drcvncclient/src/drcvncclient.cpp
+index a6f4135..92c5b31 100644
+--- a/libdrc-vnc/drcvncclient/src/drcvncclient.cpp
++++ b/libdrc-vnc/drcvncclient/src/drcvncclient.cpp
+@@ -37,6 +37,12 @@
+ 
+ #include <SDL.h>
+ #include <signal.h>
++#include <unistd.h>
++#include <thread>
++#include <chrono>
++#include <mutex>
++#include <atomic>
++#include <math.h>
+ 
+ #include <map>
+ //#include <string>
+@@ -80,11 +86,73 @@ namespace {
+   static float frameRate = 59.94; // max FPS to DRC
+ }
+ 
++/* Size of the VNC source. Upstream hardcoded 854x480 and segfaulted on anything
++ * else, which makes it impossible to serve a real desktop through x11vnc (which
++ * rounds scaled widths to a multiple of 4). Track what the server reports. */
++// Last frame handed to the encoder, in the pad's 854x480 BGRA layout.
++// VNC only reports *changes*, so a static desktop produces no updates at all and
++// the client used to push nothing - the pad then showed nothing even though the
++// stream was "running". A real console streams a frame every 16.7 ms regardless.
++// The main loop re-pushes this cached frame on iterations where VNC had nothing
++// new (measured fix: static desktop went from 1 pkt/s to ~300 pkt/s).
++static std::vector<drc::u8> g_last_frame;
++static std::mutex g_last_frame_mutex;
++static std::atomic<long long> g_last_update_us(0);
++// VNC's WaitForMessage can block indefinitely (measured: libvncclient sits in
++// select() even with a 16 us timeout, after which nothing is pushed and the pad
++// shows nothing). So the "keep the stream flowing" job cannot live in that loop:
++// this thread owns it, pushing the cached frame every 16.7 ms.
++// The pad's ARMED state expires: measured 2026-11-04, a burst arms it
++// (svc 5/0x15 -> 0, UIC state 0) and it later answers 9004 again on its own. The
++// console keeps it alive with continuous traffic. Our client only armed on rejoin
++// (~80 s apart), which is too slow - so re-arm on a timer.
++//   DRC_ARM_EVERY_MS  period in ms (default 15000; 0 disables)
++static void ArmKeepaliveLoop(drc::Streamer* streamer) {
++  const char* e = getenv("DRC_ARM_EVERY_MS");
++  long long period_ms = e ? atoll(e) : 15000;
++  if (period_ms <= 0) return;
++  for (;;) {
++    std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
++    if (getenv("DRC_NO_ARM_KEEPALIVE")) continue;
++    streamer->ArmSession();
++  }
++}
++
++static void FrameRepushLoop(drc::Streamer* streamer) {
++  for (;;) {
++    std::this_thread::sleep_for(std::chrono::microseconds(16683));
++    if (getenv("DRC_NO_REPUSH")) continue;
++    // Never fight live content: if VNC delivered an update in the last 50 ms the
++    // stream is already flowing and re-pushing would make the encoder alternate
++    // between a stale cached frame and the real one (measured: moving content
++    // dropped to ~28 fps and stopped displaying).
++    const long long last = g_last_update_us.load();
++    if (last != 0) {
++      const long long now = std::chrono::duration_cast<std::chrono::microseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count();
++      if (now - last < 50000) continue;
++    }
++    std::vector<drc::u8> frame;
++    {
++      std::lock_guard<std::mutex> lk(g_last_frame_mutex);
++      if (g_last_frame.empty()) continue;
++      frame = g_last_frame;      // copy: PushVidFrame consumes it
++    }
++    streamer->PushVidFrame(&frame, drc::kScreenWidth, drc::kScreenHeight,
++                           drc::PixelFormat::kBGRA);
++  }
++}
++
++static int g_vnc_w = 854;
++static int g_vnc_h = 480;
++
+ static rfbBool resize(rfbClient* client) {
+-  //int width=client->width,height=client->height,
+-  int width=854,height=480,
++  int width=client->width,height=client->height,
+     depth=client->format.bitsPerPixel;
+ 
++  g_vnc_w = width;
++  g_vnc_h = height;
++
+   client->updateRect.x = client->updateRect.y = 0;
+   client->updateRect.w = width; client->updateRect.h = height;
+   //client->updateRect.w = 854; client->updateRect.h = height;
+@@ -117,11 +185,11 @@ static rfbBool resize(rfbClient* client) {
+ 
+   uint8_t *pixels = static_cast<uint8_t*>
+                       //(malloc(drc::kScreenWidth * drc::kScreenHeight *
+-                      (malloc(854 * drc::kScreenHeight *
++                      (malloc(width * height *
+                       fmt->BytesPerPixel));
+ 
+   SDL_RenderReadPixels(sdlRenderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
+-  854 * fmt->BytesPerPixel);
++  width * fmt->BytesPerPixel);
+   //  drc::kScreenWidth * fmt->BytesPerPixel);
+   client->frameBuffer=pixels;
+ 
+@@ -262,7 +330,7 @@ static rfbBool handleSDLEvent(rfbClient *cl, SDL_Event *e)
+     switch (e->window.event) {
+       case SDL_WINDOWEVENT_EXPOSED:
+         //SendFramebufferUpdateRequest(cl, 0, 0, cl->width, cl->height, FALSE);
+-        SendFramebufferUpdateRequest(cl, 0, 0, 854, cl->height, FALSE);
++        SendFramebufferUpdateRequest(cl, 0, 0, g_vnc_w, g_vnc_h, FALSE);
+         break;
+       default:
+         break;
+@@ -382,6 +450,12 @@ void Init_DRC() {
+   }
+   g_streamer->SetFrameRate(drc::VideoFrameRate::k59_94Hz);
+   //g_streamer->SetTSArea(864, 480);
++
++  // Keep the media plane flowing even when the screen is static: VNC only reports
++  // changes and its wait can block, so a dedicated thread re-pushes the last
++  // frame every 16.7 ms (console behaviour). DRC_NO_REPUSH=1 disables it.
++  std::thread(FrameRepushLoop, g_streamer).detach();
++  std::thread(ArmKeepaliveLoop, g_streamer).detach();
+ }
+ 
+ void Quit_DRC() {
+@@ -405,10 +479,26 @@ void Push_DRC_Frame(rfbClient *cl) {
+ 
+   if (elapsedMS > frameWaitMS) {
+   // push frame to DRC
+-    std::vector<drc::u8> pixels((drc::u8*)cl->frameBuffer,
+-                                (drc::u8*)cl->frameBuffer +
+-                                //drc::kScreenWidth * drc::kScreenHeight * 4);
+-                                854 * drc::kScreenHeight * 4);
++    /* The GamePad decodes against a HARDCODED 854x480 SPS (libdrc encodes with
++     * b_repeat_headers=0, so no SPS/PPS travel in the stream). The VNC source is
++     * whatever x11vnc produces - 848x480 here, because x11vnc rounds scaled widths
++     * to a multiple of 4 and 854 never occurs. Feeding mismatched dimensions makes
++     * the pad fail to decode and sit on "could not connect", so re-stride the frame
++     * into an exactly 854x480 buffer (pad with black / crop if larger).
++     */
++    static std::vector<drc::u8> normalized;
++    const size_t W = drc::kScreenWidth, H = drc::kScreenHeight;
++    const drc::u8* src = (const drc::u8*)cl->frameBuffer;
++    if ((size_t)g_vnc_w == W && (size_t)g_vnc_h == H) {
++      normalized.assign(src, src + W * H * 4);
++    } else {
++      normalized.assign(W * H * 4, 0);
++      const size_t copyW = std::min((size_t)g_vnc_w, W);
++      const size_t copyH = std::min((size_t)g_vnc_h, H);
++      for (size_t y = 0; y < copyH; ++y)
++        memcpy(&normalized[y * W * 4], src + y * (size_t)g_vnc_w * 4, copyW * 4);
++    }
++    std::vector<drc::u8> pixels = normalized;
+ 
+     /*std::vector<drc::s16> samples(48000 * 2);
+     for (int i = 0; i < 48000; ++i) {
+@@ -419,7 +509,13 @@ void Push_DRC_Frame(rfbClient *cl) {
+     }
+     g_streamer->PushAudSamples(samples);*/
+     //g_streamer->PushVidFrame(&pixels, drc::kScreenWidth, drc::kScreenHeight,
+-    g_streamer->PushVidFrame(&pixels, 854, drc::kScreenHeight,
++    {
++      std::lock_guard<std::mutex> lk(g_last_frame_mutex);
++      g_last_frame = pixels;
++      g_last_update_us.store(std::chrono::duration_cast<std::chrono::microseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
++    }
++    g_streamer->PushVidFrame(&pixels, drc::kScreenWidth, drc::kScreenHeight,
+                              drc::PixelFormat::kBGRA);
+     //printf("boo");
+     //exit(1);
+@@ -431,12 +527,42 @@ void Process_DRC_Input(rfbClient *cl, drc::InputData& input_data) {
+ 
+   static int prev_x, prev_y, prev_buttons, prev_power_status;
+   static int prev_lbutton, prev_rbutton, prev_pwrbutton, prev_dhat, prev_uhat, prev_rhat, prev_lhat, prev_abtn, prev_bbtn, prev_xbtn, prev_ybtn, prev_tvbutton, prev_startbtn, prev_selectbtn, prev_homebtn;
+-
+-  // BUG: pressing a button without having had a touchscreen event sends the
+-  //      cursor to (0,0) as prev_x, prev_y are uninitialised.
++  static int prev_ts_pressed = 0;
++
++  // BUG (fixed): pressing a button before any touchscreen event sent the cursor
++  // to (0,0), because prev_x/prev_y were uninitialised. Start in the middle of
++  // the desktop instead.
++  if (prev_x == 0 && prev_y == 0) {
++    prev_x = g_vnc_w / 2;
++    prev_y = g_vnc_h / 2;
++  }
+ 
+   // New unique button event
+   if (input_data.buttons != prev_buttons) {
++    // DRC_INPUT_LOG=1: show exactly which DRC button bits arrive and what they
++    // map to. Without this, "the buttons do nothing" is unfalsifiable - the bits
++    // may never arrive, or they may arrive and map to a key nothing reacts to.
++    if (getenv("DRC_INPUT_LOG")) {
++      printf("[input] raw=0x%08x mode=%s", input_data.buttons,
++             drcJoystickMode ? "joystick" : "mouse");
++      static const struct { unsigned bit; const char* name; } kNames[] = {
++        { drc::InputData::kBtnDown, "Down" }, { drc::InputData::kBtnUp, "Up" },
++        { drc::InputData::kBtnRight, "Right" }, { drc::InputData::kBtnLeft, "Left" },
++        { drc::InputData::kBtnY, "Y" }, { drc::InputData::kBtnX, "X" },
++        { drc::InputData::kBtnB, "B" }, { drc::InputData::kBtnA, "A" },
++        { drc::InputData::kBtnSync, "Sync" }, { drc::InputData::kBtnHome, "Home" },
++        { drc::InputData::kBtnMinus, "Minus" }, { drc::InputData::kBtnPlus, "Plus" },
++        { drc::InputData::kBtnR, "R" }, { drc::InputData::kBtnL, "L" },
++        { drc::InputData::kBtnZR, "ZR" }, { drc::InputData::kBtnZL, "ZL" },
++        { drc::InputData::kBtnTV, "TV" }, { drc::InputData::kBtnPower, "Power" },
++        { drc::InputData::kBtnR3, "R3" }, { drc::InputData::kBtnL3, "L3" },
++      };
++      for (unsigned i = 0; i < sizeof(kNames)/sizeof(kNames[0]); ++i) {
++        if (input_data.buttons & kNames[i].bit) printf(" %s", kNames[i].name);
++      }
++      printf("  touch=%d\n", (int)input_data.ts_pressed);
++      fflush(stdout);
++    }
+     int lbutton = input_data.buttons & (drc::InputData::kBtnZL | drc::InputData::kBtnZR);
+     int rbutton = input_data.buttons & (drc::InputData::kBtnL | drc::InputData::kBtnR);
+     int dhat = input_data.buttons & drc::InputData::kBtnDown;
+@@ -623,16 +749,96 @@ void Process_DRC_Input(rfbClient *cl, drc::InputData& input_data) {
+     prev_buttons = input_data.buttons;
+   }
+ 
+-  // Handle touchscreen press
+-  if (input_data.ts_pressed) {
+-    int x = (input_data.ts_x * 854) - 1;
+-    int y = (input_data.ts_y * 480) - 1;
+-
+-    if (x != prev_x || y != prev_y) {
++  // Handle touchscreen press: drag moves the pointer, and press/release of the
++  // panel becomes the left mouse button. The original code only ever sent a
++  // pointer *move* here, so a tap could never click anything.
++  // DRC_NO_TOUCH_CLICK=1 restores the original move-only behaviour (bisect knob).
++  const bool touch_click = getenv("DRC_NO_TOUCH_CLICK") == NULL;
++  if (input_data.ts_pressed && touch_click) {
++    int x = (input_data.ts_x * g_vnc_w) - 1;
++    int y = (input_data.ts_y * g_vnc_h) - 1;
++
++    if (!prev_ts_pressed) {
++      // finger down: press the left button at the touch point
++      prev_ts_pressed = 1;
++      buttonMask |= rfbButton1Mask;
++      prev_x = x;
++      prev_y = y;
++      SendPointerEvent(cl, x, y, buttonMask);
++    } else if (x != prev_x || y != prev_y) {
+       SendPointerEvent(cl, x, y, buttonMask);
+       prev_x = x;
+       prev_y = y;
+     }
++  } else if (prev_ts_pressed) {
++    // finger up: release the left button where it was
++    prev_ts_pressed = 0;
++    buttonMask &= ~rfbButton1Mask;
++    SendPointerEvent(cl, prev_x, prev_y, buttonMask);
++  }
++
++  // Sticks, mouse mode only. Until this was added there was NO stick handling in
++  // mouse mode at all - the sticks only ever fed the uinput gamepad, which
++  // nothing on the desktop reads, so they appeared dead.
++  //   left stick  -> relative pointer movement
++  //   right stick -> wheel up/down
++  // Time-based, so the speed does not depend on the pad's report rate, and with a
++  // squared response curve so small deflections give fine control. The first
++  // version used a fixed step per report (~630 px/s), which was unusably fast on
++  // an 854x480 surface.
++  //   DRC_STICK_SPEED     full-deflection speed, px/s (default 240)
++  //   DRC_STICK_INVERT_Y  1 flips the vertical sense
++  if (!drcJoystickMode) {
++    static float acc_x = 0.0f, acc_y = 0.0f;
++    static uint32_t last_move_ms = 0, last_wheel_ms = 0;
++    static int invert_y = -1;
++    static float speed = -1.0f;
++    const uint32_t nowms = SDL_GetTicks();
++    if (invert_y < 0) {
++      const char* e = getenv("DRC_STICK_INVERT_Y");
++      invert_y = (e && e[0] == '1') ? 1 : 0;
++      const char* sp = getenv("DRC_STICK_SPEED");
++      speed = sp ? (float)atof(sp) : 240.0f;
++    }
++    if (last_move_ms == 0) last_move_ms = nowms;
++    float dt = (nowms - last_move_ms) / 1000.0f;
++    last_move_ms = nowms;
++    if (dt > 0.1f) dt = 0.1f;          // ignore long gaps (no burst movement)
++    const float dead = 0.12f;
++    float lx = input_data.left_stick_x;
++    float ly = input_data.left_stick_y * (invert_y ? -1.0f : 1.0f);
++    if (fabsf(lx) < dead) lx = 0.0f;
++    if (fabsf(ly) < dead) ly = 0.0f;
++    if (lx != 0.0f || ly != 0.0f) {
++      // squared curve: |x| * x keeps the sign and softens small movements
++      acc_x += lx * fabsf(lx) * speed * dt;
++      acc_y += ly * fabsf(ly) * speed * dt;
++      int dx = (int)acc_x, dy = (int)acc_y;
++      if (dx != 0 || dy != 0) {
++        acc_x -= dx;
++        acc_y -= dy;
++        int nx = prev_x + dx, ny = prev_y + dy;
++        if (nx < 0) nx = 0;
++        if (nx > g_vnc_w - 1) nx = g_vnc_w - 1;
++        if (ny < 0) ny = 0;
++        if (ny > g_vnc_h - 1) ny = g_vnc_h - 1;
++        if (nx != prev_x || ny != prev_y) {
++          prev_x = nx;
++          prev_y = ny;
++          SendPointerEvent(cl, prev_x, prev_y, buttonMask);
++        }
++      }
++    }
++    const float ry = input_data.right_stick_y;
++    if (fabsf(ry) >= 0.35f && nowms - last_wheel_ms > 60) {
++      last_wheel_ms = nowms;
++      const int wheel = (ry > 0) ? rfbButton4Mask : rfbButton5Mask;
++      const int saved = buttonMask;
++      buttonMask |= wheel;
++      SendPointerEvent(cl, prev_x, prev_y, buttonMask);
++      buttonMask = saved;
++      SendPointerEvent(cl, prev_x, prev_y, buttonMask);
++    }
+   }
+ }
+ 
+@@ -706,6 +912,48 @@ int main(int argc,char** argv) {
+ 
+     while(1) {
+       g_streamer->PollInput(&drc_input_data);
++
++      // The AX210 firmware crashes and SW-resets periodically on this host
++      // (`iwlwifi: Device error - SW reset`), which resets the phy TSF. Our frame
++      // timestamps therefore step backwards by minutes and the pad drops to
++      // "could not connect" and stays there. run/tsf-keeper.py notices the step
++      // and leaves this marker; restart the stream on the new clock so the pad
++      // decodes from a fresh `init` frame instead of trying to reconcile a
++      // backwards jump.
++      {
++        static uint32_t lastMarkerCheckMs = 0;
++        const uint32_t nowMs2 = SDL_GetTicks();
++        if (nowMs2 - lastMarkerCheckMs > 1000) {
++          lastMarkerCheckMs = nowMs2;
++          if (getenv("DRC_NO_CLOCK_REINIT") == NULL &&
++              access("/var/run/drc/tsf-reset", F_OK) == 0) {
++            unlink("/var/run/drc/tsf-reset");
++            printf("clock step detected -> re-arming and re-initialising the "
++                   "video stream\n");
++            fflush(stdout);
++            g_streamer->ArmSession();
++            g_streamer->ResetVideoStream();
++          }
++        }
++      }
++
++      // The pad leaves and rejoins the BSS about every 80 s (measured: input and
++      // keyframe requests drop to zero for ~5 s, then resume). Each rejoin is a
++      // NEW session: its command service is unarmed again and it never saw a
++      // VSTRM `init` frame, so it restarts asking for keyframes. Re-arm and
++      // re-init on every transition back to "pad is talking to us".
++      {
++        static uint32_t lastInputMs = 0;
++        const uint32_t nowMs = SDL_GetTicks();
++        if (drc_input_data.valid) {
++          const bool rejoined = (lastInputMs != 0) && (nowMs - lastInputMs > 2000);
++          if (lastInputMs == 0 || rejoined) {
++            g_streamer->ArmSession();
++            g_streamer->ResetVideoStream();
++          }
++          lastInputMs = nowMs;
++        }
++      }
+       if (drc_input_data.valid) {
+         Process_DRC_Input(cl, drc_input_data);
+       }
+@@ -718,7 +966,11 @@ int main(int argc,char** argv) {
+         if(!handleSDLEvent(cl, &e))
+           break;
+       } else {
+-        i=WaitForMessage(cl,500);
++        /* Wake at the frame period. The real console streams 59.94 fps
++         * continuously, even when the picture is static; VNC only reports
++         * changes, so waiting on messages alone left multi-hundred-ms holes
++         * in the stream (measured: median frame gap 33 ms, max 250 ms). */
++        i=WaitForMessage(cl,16);
+         if(i<0) {
+           cleanup(cl);
+           break;
+@@ -731,19 +983,50 @@ int main(int argc,char** argv) {
+         }
+       }
+ 
+-      if (vncUpdate) {
+-        //SDL_UpdateTexture(sdlTexture, NULL, cl->frameBuffer, kScreenWidth * 4);
+-        ////SDL_UpdateTexture(sdlTexture, NULL, cl->frameBuffer, 854 * 4);
+-        //
+-        //
+-        //SDL_RenderCopy(sdlRenderer, sdlTexture, NULL, NULL);
+-        //SDL_RenderPresent(sdlRenderer);
+-
+-        Push_DRC_Frame(cl);
+-        vncUpdate = FALSE;
+-
+-
++      // Take control of the panel: libdrc exposes SetLcdBacklight (UIC service 5,
++      // method 0x14) but this client never called it, so we had never sent the
++      // pad a single display command - only video. A pad whose UIC was never
++      // told to light the panel can sit on its own notice screen while happily
++      // receiving frames. Re-assert it once a second.
++      {
++        static uint32_t lastBacklight = 0;
++        const uint32_t nowMs = SDL_GetTicks();
++        if (lastBacklight == 0 || nowMs - lastBacklight > 1000) {
++          static const bool kQuiet = []() -> bool {
++            const char* e = getenv("DRC_QUIET_CMDS");
++            return e && e[0] == '1';
++          }();
++          static const bool kBacklight = []() -> bool {
++            const char* e = getenv("DRC_SEND_BACKLIGHT");
++            return !(e && e[0] == '0');
++          }();
++          if (!kQuiet && kBacklight) {
++            g_streamer->SetLcdBacklight(4, false);
++          }
++          // The console also pulses a 96-byte table to the pad on UDP
++          // 50025 -> 50125 about once a second from the moment video starts
++          // (measured from a decrypted session; research/GROUND-TRUTH-SESSION.md
++          // sec.4). Nothing in this stack ever sent it, so it is the largest
++          // remaining "the console does this and we do not" gap. Experimental:
++          // DRC_SEND_50125=0 disables it.
++          {
++            static const bool kSendPanel = []() -> bool {
++              const char* e = getenv("DRC_SEND_50125");
++              return !(e && e[0] == '0');
++            }();
++            if (kSendPanel && !kQuiet) {
++              g_streamer->SendPanelTable();
++            }
++          }
++          lastBacklight = nowMs;
++        }
+       }
++
++      // Push on every iteration; Push_DRC_Frame limits the rate to 59.94 fps.
++      // vncUpdate only tells us the content changed - it must not gate the
++      // stream, or a static desktop stops feeding the pad's decoder.
++      Push_DRC_Frame(cl);
++      vncUpdate = FALSE;
+     }
+   } while(listenLoop);
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/Makefile b/libdrc-vnc/libdrc-thefloppydriver/Makefile
+index fc79d91..a1f44ea 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/Makefile
++++ b/libdrc-vnc/libdrc-thefloppydriver/Makefile
+@@ -25,7 +25,9 @@ libdrc.a: $(LIBDRC_OBJS)
+ 	ar rcs $@ $^
+ 
+ libdrc.so: $(LIBDRC_OBJS) Makefile.config
+-	$(CXX) $(LDFLAGS) -shared -o $@ $(LIBDRC_OBJS)
++# Libraries must follow the objects, otherwise --as-needed (default on Debian/
++# Ubuntu) discards them and libdrc.so ends up with no DT_NEEDED for libswscale.
++	$(CXX) -shared -o $@ $(LIBDRC_OBJS) $(LDFLAGS)
+ 
+ define build_demo
+ demos/$(1)/$(1): demos/$(1)/main.o demos/framework/framework.o libdrc.a
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/astrm-packet.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/astrm-packet.h
+index d28818e..a317451 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/astrm-packet.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/astrm-packet.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <array>
+ #include <drc/types.h>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-packet.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-packet.h
+index 225e2b7..be18123 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-packet.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-packet.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <array>
+ #include <drc/types.h>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-protocol.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-protocol.h
+index ed91497..09be46e 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-protocol.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/cmd-protocol.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <drc/internal/cmd-packet.h>
+ #include <drc/internal/cmd-protocol.h>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/device-config.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/device-config.h
+index 10c97d4..d4ec6a8 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/device-config.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/device-config.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <array>
+ #include <drc/types.h>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/h264-encoder.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/h264-encoder.h
+index e036db6..4f90b19 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/h264-encoder.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/h264-encoder.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <array>
+ #include <cstdio>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h
+new file mode 100644
+index 0000000..20141aa
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h
+@@ -0,0 +1,127 @@
++// Keyframe (IDR) policy for the DRC link.
++//
++// The problem this solves, measured: the GamePad sends a 4-byte datagram
++// 01 00 00 00 once per frame EVEN WHEN THE PICTURE IS PERFECT - it is a
++// heartbeat, not a fault signal (wozt/libdrc 291aed6a8c noted 58/s while a
++// synthetic demo decoded cleanly). libdrc treats every one as "send me a
++// keyframe", so each frame becomes an IDR.
++//
++// Cost, measured on this host (research/CODEC-SPEC.md 2.2):
++//   normal desktop stream ...... 0.29 Mbps
++//   every frame an IDR ......... 8.57 Mbps   (17.8 kB/frame, 28x)
++// That cannot fit the link, so the pad loses more, asks more, and the picture
++// never recovers. The loop is broken by treating the message as liveness.
++//
++// Policy implemented here:
++//   * IDR on the first frame of a stream;
++//   * a proactive IDR every kProactiveIdrFrames frames (bounded self-healing);
++//   * a request-driven IDR only when the request cadence CHANGES - i.e. it
++//     arrives while the previous request was a long time ago - which is what a
++//     real "I lost the picture" request looks like;
++//   * one format-only slot after every IDR, so no P frame is sent while the
++//     receiver is still recovering (console behaviour: format+IDR, format only,
++//     format+P => a 2 x 16.683 ms IDR-to-P step).
++//
++// Pure code, no clocks: callers pass timestamps. tests/scheduler_test.cpp runs it.
++#ifndef DRC_INTERNAL_IDR_POLICY_H_
++#define DRC_INTERNAL_IDR_POLICY_H_
++
++#include <drc/types.h>
++
++namespace drc {
++
++// Proactive IDR cadence. Barista uses 60 encoded frames; a 60-frame cadence
++// costs ~1 fps and one ~40 kB IDR per second on game content.
++const u32 kProactiveIdrFrames = 60;
++
++// A heartbeat arriving sooner than this after the previous one is cadence, not
++// distress. At 59.94 fps a heartbeat lands every ~16.7 ms.
++const u32 kRequestDebounceUs = 50000;  // 50 ms ~= 3 frames
++
++// Hard ceiling on IDR frequency, measured against a decrypted real console
++// session (2026-11-04). A pad that cannot decode asks for a keyframe 45-60
++// times a second, and with only the 50 ms debounce above that still produced
++// 15.3 IDR/s - 3.29 Mbps, 9.59 datagrams/frame and the encoder stuck at 43 fps,
++// while the console's own stream to the same pad was 0.0 IDR/s, 1.67 Mbps,
++// 5.48 datagrams/frame at 57.9 fps and the pad stopped requesting entirely.
++// The console sends roughly one IDR per 26 s; Barista one per 60 frames (~1/s)
++// and works. So cap request-driven IDRs at 1/s: answering a request that fast
++// is pointless anyway, because an IDR takes longer than that to be useful.
++const u32 kMinIdrSpacingUs = 1000000;  // 1 s, env DRC_IDR_MIN_US overrides
++
++enum class IdrDecision {
++  kNone,        // send a normal P frame
++  kIdr,         // send an IDR frame
++  kFormatOnly,  // send only the 32-byte format message this slot
++};
++
++class IdrPolicy {
++ public:
++  IdrPolicy() {}
++  explicit IdrPolicy(u32 min_idr_spacing_us)
++      : min_idr_spacing_us_(min_idr_spacing_us) {}
++
++  // Returns what this frame slot should carry.
++  //   frame_index   frames encoded so far in this stream, starting at 0
++  //   requested     a 01 00 00 00 datagram arrived since the last call
++  //   now_us        caller's monotonic clock, microseconds
++  IdrDecision Decide(u64 frame_index, bool requested, u64 now_us) {
++    // Recovery slot: the frame right after an IDR carries only the format
++    // message, never video.
++    if (format_only_pending_) {
++      format_only_pending_ = false;
++      return IdrDecision::kFormatOnly;
++    }
++
++    const bool first = (frame_index == 0);
++    const bool proactive = frame_index != 0 &&
++                           (frame_index % kProactiveIdrFrames) == 0;
++
++    // Debounce: a request that repeats at heartbeat cadence is liveness.
++    bool real_request = false;
++    if (requested) {
++      if (!have_request_) {
++        real_request = true;
++      } else {
++        real_request = (now_us - last_request_us_) > kRequestDebounceUs;
++      }
++      last_request_us_ = now_us;
++      have_request_ = true;
++    }
++
++    // Rate ceiling. The first frame and the proactive cadence always go; a
++    // request-driven IDR has to clear the spacing on top of the debounce.
++    const bool spacing_ok =
++        !have_idr_ || (now_us - last_idr_us_) >= min_idr_spacing_us_;
++    if (first || proactive || (real_request && spacing_ok)) {
++      format_only_pending_ = true;
++      last_idr_us_ = now_us;
++      have_idr_ = true;
++      return IdrDecision::kIdr;
++    }
++    return IdrDecision::kNone;
++  }
++
++  // Frames still owed a recovery slot (0 or 1). For logging/tests.
++  bool format_only_pending() const { return format_only_pending_; }
++
++  void Reset() {
++    format_only_pending_ = false;
++    have_request_ = false;
++    have_idr_ = false;
++    last_idr_us_ = 0;
++    last_request_us_ = 0;
++  }
++
++ private:
++  bool format_only_pending_ = false;
++  bool have_request_ = false;
++  u64 last_request_us_ = 0;
++  bool have_idr_ = false;
++  u64 last_idr_us_ = 0;
++  u32 min_idr_spacing_us_ = kMinIdrSpacingUs;
++};
++
++}  // namespace drc
++
++#endif  // DRC_INTERNAL_IDR_POLICY_H_
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/session-push.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/session-push.h
+new file mode 100644
+index 0000000..b3f8d9f
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/session-push.h
+@@ -0,0 +1,75 @@
++// Copyright (c) 2013, Mema Hacking, All rights reserved.
++// See LICENSE for the full license text.
++//
++// Replays the console's session-state push to the GamePad.
++//
++// Measured from a decrypted real console session (2026-11-04): the console's
++// dominant command traffic is 779 datagrams of svc 0 / method 0x11 - a 4-fragment
++// message stream (three `flags 0x42` continuations then one `flags 0x40` final,
++// tid 0x10b, a u32 index running 1..779) delivered at ~29 datagrams/s for the
++// first 28 s of a session, followed by svc 0/0x12 (whose payload contains the
++// count 0x0000030b = 779), svc 4/0x21 and svc 4/0x1a (flags 0x42).
++//
++// Nothing else in the corpus sends anything like it: it is ~4 KB/message,
++// ~240 kbit/s, and it exists only at session start. Our stack has never emitted
++// it from the streamer - only hand-replayed out-of-band - and the pad starts a
++// new session roughly every 80 s, so it has to be re-sent per session.
++//
++// The bytes come from the capture (out/evidence/truth/console-messages/
++// session-push.bin), replayed verbatim at the console's own cadence.
++#ifndef DRC_INTERNAL_SESSION_PUSH_H_
++#define DRC_INTERNAL_SESSION_PUSH_H_
++
++#include <atomic>
++#include <condition_variable>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include <drc/types.h>
++
++namespace drc {
++
++class UdpClient;
++
++class SessionPusher {
++ public:
++  // dst_addr is the pad's "ip:port" for the command service (…:50123).
++  explicit SessionPusher(const std::string& dst_addr);
++  ~SessionPusher();
++
++  bool Start();
++  void Stop();
++
++  // Queue one replay of the console's session-start state push. Safe to call
++  // from any thread; a push already in flight is not restarted.
++  void Kick();
++
++  // Datagrams sent so far (for logging/tests).
++  u64 Sent() const { return sent_.load(); }
++
++ private:
++  void Loop();
++  bool Load();
++
++  std::unique_ptr<UdpClient> client_;
++  std::thread thread_;
++  std::mutex mutex_;
++  std::condition_variable cv_;
++  std::atomic<bool> stop_{false};
++  std::atomic<bool> kick_{false};
++  std::atomic<u64> sent_{0};
++  bool running_ = false;
++
++  struct Record {
++    double rel;                 // seconds from the first datagram
++    std::vector<byte> payload;
++  };
++  std::vector<Record> records_;
++  bool loaded_ = false;
++};
++
++}  // namespace drc
++
++#endif  // DRC_INTERNAL_SESSION_PUSH_H_
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/udp.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/udp.h
+index e807907..57e8f3a 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/udp.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/udp.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <drc/internal/events.h>
+ #include <drc/types.h>
+@@ -38,7 +39,14 @@ class UdpClient {
+   explicit UdpClient(const std::string& dst_addr);
+   virtual ~UdpClient();
+ 
+-  bool Start();
++  // bind_port != 0 pins the local source port. The real console sources video
++  // from UDP 50020 and audio/format from 50021; the pad addresses its service
++  // return traffic to those ports, so an ephemeral source port is not
++  // equivalent.
++  // bind_port != 0 pins the local source port; priority != 0 applies
++  // SO_PRIORITY so the frame lands in the intended WMM access category
++  // (5 = voice, the category the console uses for media).
++  bool Start(u16 bind_port = 0, int priority = 0);
+   void Stop();
+ 
+   bool Send(const byte* data, size_t size);
+@@ -49,6 +57,8 @@ class UdpClient {
+  private:
+   int sock_fd_;
+   std::string dst_addr_;
++  u16 bind_port_;
++  int priority_;
+   sockaddr_in dst_addr_parsed_;
+ };
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h
+new file mode 100644
+index 0000000..cb3b333
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h
+@@ -0,0 +1,67 @@
++// In-frame video packet scheduling for the DRC link.
++//
++// Why this exists: upstream libdrc sends every packet of a frame in one tight
++// loop. A healthy 5-chunk frame is ~5 datagrams, but an IDR is 25-40 kB, i.e.
++// 15-25 datagrams, all back to back. The real console spreads them across the
++// frame slot, and bursting is the documented cause of freezes and of decoder
++// desync (see research/CODEC-SPEC.md sections 1.4 and 3.5).
++//
++// The schedule below is measured from an authenticated real-console capture
++// (Barista's drc-media-packet-datasheet.md): chunk starts at 0/3/6/9/11 ms with
++// per-chunk completion deadlines at 2.5/5/7.5/10/13 ms. The first two chunks are
++// delivered early so the pad can start feeding its decoder; the spread avoids a
++// single large burst.
++//
++// Pure code, no sockets, no timers: tests/scheduler_test.cpp exercises it.
++#ifndef DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
++#define DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
++
++#include <cstddef>
++#include <drc/types.h>
++
++namespace drc {
++
++// One video frame slot at 59.94 Hz.
++const u32 kVideoFramePeriodUs = 16683;
++
++// Chunk start offsets within a frame, microseconds from frame start.
++const u32 kChunkStartUs[] = {0, 3000, 6000, 9000, 11000};
++// Final-packet deadline for each chunk, microseconds from frame start.
++const u32 kChunkDeadlineUs[] = {2500, 5000, 7500, 10000, 13000};
++
++const size_t kVideoChunksPerFrame = 5;
++
++// Microsecond offset, from frame start, at which packet `packet_index` of
++// `packet_count` in `chunk_index` should be sent.
++//
++// Multi-packet chunks are spread linearly across their window so that a 4 kB
++// chunk does not appear as an instantaneous burst. Single-packet chunks go out
++// at the window start.
++//
++// Returns 0 for out-of-range input rather than reading past the tables.
++inline u32 VideoPacketOffsetUs(size_t chunk_index, size_t packet_index,
++                               size_t packet_count) {
++  if (chunk_index >= kVideoChunksPerFrame) return 0;
++  const u32 start = kChunkStartUs[chunk_index];
++  const u32 end = kChunkDeadlineUs[chunk_index];
++  if (packet_count <= 1 || packet_count > 256) return start;
++  if (packet_index >= packet_count) return end;
++  const u32 span = end - start;
++  return start + (u32)((u64)span * packet_index / (packet_count - 1));
++}
++
++// True when a chunk must be split across several datagrams.
++inline bool ChunkNeedsSplitting(size_t chunk_size, size_t max_payload) {
++  return max_payload != 0 && chunk_size > max_payload;
++}
++
++// Number of datagrams a chunk occupies.
++inline size_t ChunkPacketCount(size_t chunk_size, size_t max_payload) {
++  if (max_payload == 0) return 0;
++  if (chunk_size == 0) return 0;
++  return (chunk_size + max_payload - 1) / max_payload;
++}
++
++}  // namespace drc
++
++#endif  // DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
+index f5189ae..96c345a 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
+@@ -27,9 +27,13 @@
+ #include <drc/internal/events.h>
+ #include <drc/video-frame-rate.h>
+ #include <drc/types.h>
++#include <atomic>
++#include <deque>
++#include <condition_variable>
+ #include <memory>
+ #include <mutex>
+ #include <string>
++#include <thread>
+ #include <vector>
+ 
+ #include <cstddef>
+@@ -90,8 +94,22 @@ class VideoStreamer : public ThreadedEventMachine {
+   // Require an IDR to be sent next.
+   void ResyncStream();
+ 
++  // A new pad session begins (the pad leaves and rejoins the BSS about every
++  // 80 s, measured 2026-11-04). The console's first frame of a session carries
++  // the VSTRM `init` flag and a fresh IDR; ours is only set once per streamer
++  // lifetime, so a rejoining pad never sees one. This makes the next frame the
++  // stream's first again.
++  void ResetStreamInit();
++
++  std::atomic<bool> reset_init_{false};
++
+   void SetFrameRate(VideoFrameRate frame_rate);
+ 
++  // Diagnostics for the paced sender (used by tests/streamer_smoke.cpp).
++  u64 paced_packets() const { return paced_packets_; }
++  u64 dropped_jobs() const { return dropped_jobs_; }
++  u64 send_failures() const { return send_failures_; }
++
+  protected:
+   virtual void InitEventsAndRun();
+ 
+@@ -99,6 +117,13 @@ class VideoStreamer : public ThreadedEventMachine {
+   void LatchOnCurrentFrame(std::vector<byte>* latched_frame);
+   void LatchOnCurrentChunks(std::vector<std::string>* latched_chunk);
+ 
++  // Paced sender. Runs on its own thread so that (a) encoding no longer eats
++  // the 16.683 ms frame budget and (b) each chunk's packets can be spread over
++  // its window instead of being bursted. See research/CODEC-SPEC.md 3.5.
++  void SenderLoop();
++  void PostJob(std::vector<byte>&& frame, std::vector<std::string>&& chunks,
++               u32 timestamp, bool send_idr, bool format_only, u64 start_us);
++
+   std::unique_ptr<UdpClient> astrm_client_;
+   std::unique_ptr<UdpClient> vstrm_client_;
+ 
+@@ -110,6 +135,30 @@ class VideoStreamer : public ThreadedEventMachine {
+   VideoFrameRate frame_rate_ = VideoFrameRate::k59_94Hz;
+ 
+   TriggerableEvent* resync_evt_;
++
++  // Two-deep job mailbox feeding the sender thread. It was single-slot, and on
++  // a 16.683 ms budget that silently dropped ~4% of frames (measured: 57.3 fps
++  // delivered with a perfect 16683 us timestamp grid = dropped slots, not bad
++  // pacing). A shallow queue absorbs one slow frame (an IDR) without losing the
++  // next one, while still never building real latency.
++  struct Job {
++    std::vector<byte> frame;
++    std::vector<std::string> chunks;
++    u32 timestamp = 0;
++    bool send_idr = false;
++    bool format_only = false;
++    u64 start_us = 0;
++  };
++  static const size_t kMaxPendingJobs = 2;
++  std::deque<Job> jobs_;
++  std::thread sender_thread_;
++  std::mutex send_mutex_;
++  std::condition_variable send_cv_;
++  std::atomic<bool> stop_sender_{false};
++
++  std::atomic<u64> dropped_jobs_{0};
++  std::atomic<u64> paced_packets_{0};
++  std::atomic<u64> send_failures_{0};
+ };
+ 
+ }  // namespace drc
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/vstrm-packet.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/vstrm-packet.h
+index 22923c9..6de9bc3 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/vstrm-packet.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/vstrm-packet.h
+@@ -23,6 +23,7 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #pragma once
++#include <cstddef>
+ 
+ #include <array>
+ #include <drc/video-frame-rate.h>
+@@ -74,6 +75,7 @@ class VstrmPacket {
+   bool GetExtOption(u8 opt, u8* val = NULL) const;
+   void SetExtOption(u8 opt, u8* val = NULL);
+   void ClearExtOption(u8 opt, bool has_val);
++  void NormalizeExtOptions();
+ 
+   std::array<byte, kVstrmHeaderSize + kMaxVstrmPayloadSize> pkt_;
+ };
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/streamer.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/streamer.h
+index 14c4d26..8ea1d1a 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/streamer.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/streamer.h
+@@ -41,6 +41,8 @@ class DeviceConfig;
+ class InputReceiver;
+ class VideoConverter;
+ class VideoStreamer;
++class SessionPusher;
++class UdpClient;
+ class UdpServer;
+ class UvcUacStateSynchronizer;
+ 
+@@ -53,6 +55,12 @@ class Streamer {
+   static constexpr const char* kDefaultAudioDest = "192.168.1.11:50121";
+   static constexpr const char* kDefaultCmdDest = "192.168.1.11:50123";
+ 
++  // The console sources its media services from these ports, and the pad
++  // addresses video/audio "service return traffic" to exactly them (Barista's
++  // port table). Ephemeral source ports are therefore not equivalent.
++  static constexpr u16 kConsoleVideoSrcPort = 50020;
++  static constexpr u16 kConsoleAudioSrcPort = 50021;
++
+   typedef std::function<void(bool, const std::vector<byte>&)>
+                              CommandReplyCallback;
+ 
+@@ -130,8 +138,29 @@ class Streamer {
+   // Attempts to shutdown the pad, not guaranteed to work.
+   void ShutdownPad();
+ 
++  // Console parity, experimental. A real console sends a fixed 96-byte table to
++  // the pad on UDP 50025 -> 50125 about once a second, starting at the moment
++  // video begins (measured from a decrypted session, 2026-11-04,
++  // research/GROUND-TRUTH-SESSION.md sec.4); nothing in libdrc ever sent it. The
++  // payload is the console's own bytes with a little-endian counter at offset 6.
++  // Returns false if the socket is not up. Call it ~1 Hz.
++  bool SendPanelTable();
++
++  // Sends the console's pre-video "arm" burst (svc 0/0x00, 4/0x04, 5/0x02 with
++  // the console's 102-byte all-zero payload, 5/0x06). The pad's command service
++  // is gated per manager (error 9004 until armed) and it re-arms per session, so
++  // this must be repeated whenever the pad rejoins - roughly every 80 s, measured.
++  void ArmSession();
++
++  // Re-assert the VSTRM `init` flag and force an IDR on the next frame - what a
++  // console does at the start of each video stream, i.e. once per pad session.
++  void ResetVideoStream();
++
+  private:
+   std::unique_ptr<UdpServer> msg_server_;
++  std::unique_ptr<UdpClient> panel_client_;
++  std::unique_ptr<SessionPusher> session_pusher_;
++  u16 panel_counter_;
+ 
+   std::unique_ptr<AudioStreamer> aud_streamer_;
+   std::unique_ptr<CmdClient> cmd_client_;
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/audio-streamer.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/audio-streamer.cpp
+index e13e1f8..56f6ee4 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/audio-streamer.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/audio-streamer.cpp
+@@ -44,8 +44,12 @@ const u32 kSamplesPerSecond = 48000;
+ // milliseconds between 2 packets.
+ //
+ // 384 samples == one 1536b packet every 8ms
+-const u32 kSamplesPerPacket = 384;
+-const u32 kPacketIntervalMs = 1000 / (kSamplesPerSecond / kSamplesPerPacket);
++// The console sends 416 stereo frames (1664 B of PCM) every 8.666... ms; Barista
++// reproduces that byte-for-byte. libdrc used 384 frames / 8 ms / 1536 B, which is
++// not what the pad sees from a real console and is the obvious thing for a media
++// service to validate before it starts an audio/video session.
++const u32 kSamplesPerPacket = 416;
++const u32 kPacketIntervalUs = 1000000ull * kSamplesPerPacket / kSamplesPerSecond;
+ 
+ s32 GetTimestamp() {
+   u64 tsf;
+@@ -64,7 +68,8 @@ AudioStreamer::~AudioStreamer() {
+ }
+ 
+ bool AudioStreamer::Start() {
+-  if (!astrm_client_->Start()) {
++  // Same source port the console uses for PCM audio and video-format messages.
++  if (!astrm_client_->Start(50021, 5)) {
+     Stop();
+     return false;
+   }
+@@ -80,7 +85,9 @@ void AudioStreamer::Stop() {
+ void AudioStreamer::InitEventsAndRun() {
+   u16 seqid = 0;
+ 
+-  NewRepeatedTimerEvent(kPacketIntervalMs * 1000000, [&](Event*) {
++  // The event timer takes NANOSECONDS (the old code multiplied its ms value
++  // by 1000000); kPacketIntervalUs is microseconds, so scale by 1000.
++  NewRepeatedTimerEvent(kPacketIntervalUs * 1000ull, [&](Event*) {
+     std::vector<s16> samples;
+     PopSamples(&samples, kSamplesPerPacket * 2);
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/cmd-packet.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/cmd-packet.cpp
+index e1478aa..d450159 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/cmd-packet.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/cmd-packet.cpp
+@@ -223,15 +223,15 @@ bool UvcUacCmdPacket::MicMuted() const {
+ }
+ 
+ s16 UvcUacCmdPacket::MicVolume() const {
+-  return (pkt_[6] << 8) | pkt_[7];
++  return (pkt_[7] << 8) | pkt_[6];
+ }
+ 
+ s16 UvcUacCmdPacket::MicJackVolume() const {
+-  return (pkt_[8] << 8) | pkt_[9];
++  return (pkt_[9] << 8) | pkt_[8];
+ }
+ 
+ u16 UvcUacCmdPacket::MicSamplingRate() const {
+-  return (pkt_[12] << 8) | pkt_[13];
++  return (pkt_[13] << 8) | pkt_[12];
+ }
+ 
+ bool UvcUacCmdPacket::CamEnabled() const {
+@@ -255,18 +255,18 @@ void UvcUacCmdPacket::SetMicMuted(bool flag) {
+ }
+ 
+ void UvcUacCmdPacket::SetMicVolume(s16 volume) {
+-  pkt_[6] = volume >> 8;
+-  pkt_[7] = volume & 0xFF;
++  pkt_[6] = volume & 0xFF;
++  pkt_[7] = volume >> 8;
+ }
+ 
+ void UvcUacCmdPacket::SetMicJackVolume(s16 volume) {
+-  pkt_[8] = volume >> 8;
+-  pkt_[9] = volume & 0xFF;
++  pkt_[8] = volume & 0xFF;
++  pkt_[9] = volume >> 8;
+ }
+ 
+ void UvcUacCmdPacket::SetMicSamplingRate(u16 sampling_rate) {
+-  pkt_[12] = sampling_rate >> 8;
+-  pkt_[13] = sampling_rate & 0xFF;
++  pkt_[12] = sampling_rate & 0xFF;
++  pkt_[13] = sampling_rate >> 8;
+ }
+ 
+ void UvcUacCmdPacket::SetCamEnabled(bool enabled) {
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/events.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/events.cpp
+index 03769ed..782dd95 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/events.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/events.cpp
+@@ -22,6 +22,7 @@
+ // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
++#include <cstdio>
+ #include <array>
+ #include <cassert>
+ #include <cstring>
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/h264-encoder.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/h264-encoder.cpp
+index 5f05e58..24f3d44 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/h264-encoder.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/h264-encoder.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include <cassert>
+ #include <cstdio>
++#include <cstdlib>
+ #include <drc/internal/h264-encoder.h>
+ #include <drc/screen.h>
+ #include <drc/types.h>
+@@ -136,7 +137,9 @@ H264Encoder::~H264Encoder() {
+ void H264Encoder::CreateEncoder() {
+   x264_param_t param;
+ 
+-  x264_param_default_preset(&param, kEncoderQuality, "zerolatency");
++  const char* env_preset = getenv("DRC_PRESET");
++  x264_param_default_preset(&param, env_preset ? env_preset : kEncoderQuality,
++                            "zerolatency");
+   param.i_width = kScreenWidth;
+   param.i_height = kScreenHeight;
+ 
+@@ -187,7 +190,26 @@ void H264Encoder::CreateEncoder() {
+   param.i_log_level = X264_LOG_INFO;
+   param.pf_log = LogEncoderMessages;
+ 
+-  x264_param_apply_profile(&param, "main");
++  const char* env_profile = getenv("DRC_PROFILE");
++  x264_param_apply_profile(&param, env_profile ? env_profile : "high");
++
++  /* Experimentation hooks: retune the encoder without a rebuild. The GamePad is
++   * the only judge of what it will decode, so sweeping these live matters. */
++  {
++    const char* e;
++    if ((e = getenv("DRC_QP"))) param.rc.i_qp_constant = param.rc.i_qp_min = param.rc.i_qp_max = atoi(e);
++    if ((e = getenv("DRC_KEYINT"))) { param.i_keyint_max = atoi(e); param.i_keyint_min = atoi(e) < 10 ? (atoi(e) > 0 ? atoi(e) : 1) : 10; }
++    if ((e = getenv("DRC_DEBLOCK"))) param.b_deblocking_filter = atoi(e);
++    if ((e = getenv("DRC_SLICES"))) param.i_slice_count = atoi(e);
++    if ((e = getenv("DRC_THREADS"))) param.i_threads = atoi(e);
++    if ((e = getenv("DRC_CABAC"))) param.b_cabac = atoi(e);
++    if ((e = getenv("DRC_8X8"))) param.analyse.b_transform_8x8 = atoi(e);
++    if ((e = getenv("DRC_REFS"))) param.i_frame_reference = atoi(e);
++    if ((e = getenv("DRC_BFRAMES"))) param.i_bframe = atoi(e);
++    if ((e = getenv("DRC_DRH"))) param.b_drh_mode = atoi(e);
++    if ((e = getenv("DRC_INTRA_REFRESH"))) param.b_intra_refresh = atoi(e);
++    if ((e = getenv("DRC_SCENECUT"))) param.i_scenecut_threshold = atoi(e);
++  }
+ 
+   encoder_ = x264_encoder_open(&param);
+   assert(x264_encoder_maximum_delayed_frames(encoder_) == 0 ||
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/session-push.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/session-push.cpp
+new file mode 100644
+index 0000000..8e1c7f7
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/session-push.cpp
+@@ -0,0 +1,122 @@
++// Copyright (c) 2013, Mema Hacking, All rights reserved.
++// See LICENSE for the full license text.
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <drc/internal/session-push.h>
++#include <drc/internal/udp.h>
++
++namespace drc {
++
++namespace {
++const char* kDefaultPath =
++    "/home/kali/Wiiu/out/evidence/truth/console-messages/session-push.bin";
++}  // namespace
++
++SessionPusher::SessionPusher(const std::string& dst_addr)
++    : client_(new UdpClient(dst_addr)) {}
++
++SessionPusher::~SessionPusher() {
++  Stop();
++}
++
++bool SessionPusher::Start() {
++  if (thread_.joinable()) {
++    return true;
++  }
++  if (!client_->Start(0, 0)) {
++    return false;
++  }
++  thread_ = std::thread(&SessionPusher::Loop, this);
++  return true;
++}
++
++void SessionPusher::Stop() {
++  stop_.store(true);
++  cv_.notify_all();
++  if (thread_.joinable()) {
++    thread_.join();
++  }
++  client_->Stop();
++}
++
++void SessionPusher::Kick() {
++  kick_.store(true);
++  cv_.notify_all();
++}
++
++bool SessionPusher::Load() {
++  if (loaded_) {
++    return !records_.empty();
++  }
++  loaded_ = true;
++  const char* env = getenv("DRC_SESSION_PUSH");
++  const char* path = (env && env[0]) ? env : kDefaultPath;
++  FILE* f = fopen(path, "rb");
++  if (!f) {
++    fprintf(stderr, "libdrc: session push file not found (%s)\n", path);
++    return false;
++  }
++  unsigned short count = 0;
++  if (fread(&count, sizeof(count), 1, f) != 1) {
++    fclose(f);
++    return false;
++  }
++  for (unsigned i = 0; i < count; ++i) {
++    u32 len = 0;
++    double rel = 0.0;
++    if (fread(&len, sizeof(len), 1, f) != 1 ||
++        fread(&rel, sizeof(rel), 1, f) != 1) {
++      break;
++    }
++    Record r;
++    r.rel = rel;
++    r.payload.resize(len);
++    if (len && fread(&r.payload[0], 1, len, f) != len) {
++      break;
++    }
++    records_.push_back(std::move(r));
++  }
++  fclose(f);
++  fprintf(stderr, "libdrc: session push loaded: %u records\n",
++          static_cast<unsigned>(records_.size()));
++  return !records_.empty();
++}
++
++void SessionPusher::Loop() {
++  std::unique_lock<std::mutex> lk(mutex_);
++  for (;;) {
++    cv_.wait(lk, [this] { return stop_.load() || kick_.load(); });
++    if (stop_.load()) {
++      return;
++    }
++    kick_.store(false);
++    if (!Load()) {
++      continue;
++    }
++    lk.unlock();
++    // Replay at the console's own cadence. The push is ~29 datagrams/s for 28 s;
++    // a whole run therefore lasts about that long and runs on this thread so it
++    // never delays video.
++    const auto t0 = std::chrono::steady_clock::now();
++    size_t i = 0;
++    for (const Record& r : records_) {
++      if (stop_.load()) {
++        break;
++      }
++      const auto due = t0 + std::chrono::microseconds(
++          static_cast<long long>(r.rel * 1e6));
++      std::this_thread::sleep_until(due);
++      client_->Send(r.payload.data(), r.payload.size());
++      ++i;
++      sent_.store(sent_.load() + 1);
++    }
++    fprintf(stderr, "libdrc: session push sent %u datagrams (%.1fs of console "
++                    "session state)\n",
++            static_cast<unsigned>(i), records_.empty() ? 0.0 : records_.back().rel);
++    lk.lock();
++  }
++}
++
++}  // namespace drc
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/streamer.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/streamer.cpp
+index f3b9fcc..d7f2377 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/streamer.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/streamer.cpp
+@@ -22,11 +22,13 @@
+ // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
++#include <cstdio>
+ #include <cstring>
+ #include <drc/internal/audio-streamer.h>
+ #include <drc/internal/cmd-protocol.h>
+ #include <drc/internal/device-config.h>
+ #include <drc/internal/input-receiver.h>
++#include <drc/internal/session-push.h>
+ #include <drc/internal/udp.h>
+ #include <drc/internal/uinput-feeder.h>
+ #include <drc/internal/uvcuac-synchronizer.h>
+@@ -63,6 +65,24 @@ void RunGenericAsyncCmd(CmdClient* cli, int service, int method,
+   cli->AsyncQuery(CmdQueryType::kGenericCommand, pkt.GetBytes(),
+                       pkt.GetSize(), cb);
+ }
++// The console's 96-byte 50025 table, captured verbatim (only the u16 counter at
++// offset 6 changes per message). See research/GROUND-TRUTH-SESSION.md sec.4.
++const byte kPanelTable[96] = {
++  0x00, 0x00, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x5a, 0xa5, 0x58, 0x00,
++  0x00, 0x03, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
++  0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x10, 0x00, 0x18, 0x00,
++  0x20, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00, 0x40, 0x00, 0x48, 0x00,
++  0x50, 0x00, 0x58, 0x00, 0x60, 0x00, 0x68, 0x00, 0x70, 0x00, 0x78, 0x00,
++  0x80, 0x00, 0x88, 0x00, 0x90, 0x00, 0x98, 0x00, 0xa0, 0x00, 0xa8, 0x00,
++  0xb0, 0x00, 0xb8, 0x00, 0xc0, 0x00, 0xc8, 0x00, 0xd0, 0x00, 0xd8, 0x00,
++  0xe0, 0x00, 0xe8, 0x00, 0xeb, 0x00, 0xeb, 0x00, 0xeb, 0x00, 0x00, 0x00,
++};
++
++std::string HostPart(const std::string& addr) {
++  size_t pos = addr.find_last_of(':');
++  return pos == std::string::npos ? addr : addr.substr(0, pos);
++}
++
+ }  // namespace
+ 
+ Streamer::Streamer(const std::string& vid_dst,
+@@ -72,6 +92,9 @@ Streamer::Streamer(const std::string& vid_dst,
+                    const std::string& input_bind,
+                    const std::string& cmd_bind)
+     : msg_server_(new UdpServer(msg_bind)),
++      panel_client_(new UdpClient(HostPart(vid_dst) + ":50125")),
++      session_pusher_(new SessionPusher(HostPart(vid_dst) + ":50123")),
++      panel_counter_(0),
+       aud_streamer_(new AudioStreamer(aud_dst)),
+       cmd_client_(new CmdClient(cmd_dst, cmd_bind)),
+       vid_converter_(new VideoConverter()),
+@@ -98,6 +121,21 @@ bool Streamer::Start() {
+         PushNativeVidFrame(yuv_frame);
+       });
+ 
++  // The 50025 panel-table socket is experimental console parity; a bind failure
++  // there must not stop video/audio, so it is reported and ignored.
++  if (!panel_client_->Start(50025, 5)) {
++    fprintf(stderr, "libdrc: could not bind UDP 50025 (panel table disabled)\n");
++  }
++  session_pusher_->Start();
++  {
++    // Testing hook: replay the console's session-state push immediately, without
++    // waiting for the pad to send input (which is what normally drives it via
++    // ArmSession()). Lets the mechanism be verified sender-side.
++    const char* ps = getenv("DRC_SESSION_PUSH_ON_START");
++    if (ps && ps[0] == '1') {
++      session_pusher_->Kick();
++    }
++  }
+   if (!msg_server_->Start() ||
+       !aud_streamer_->Start() ||
+       !cmd_client_->Start() ||
+@@ -109,11 +147,58 @@ bool Streamer::Start() {
+     return false;
+   }
+ 
+-  SyncUICConfig();
++  // DRC_ARM_BURST=1 sends the console's pre-video "arm" burst: the pad's command
++  // service has a per-manager gate (research/rce-hunt/10-tv-remote-live.md sec.6,
++  // 8) in which anything needing the video/sound/ir/nwk managers returns error
++  // 9004 until the session is armed. Sending these four commands moves the pad's
++  // state index 12 -> 0, makes previously-refused methods answer, and is the only
++  // configuration in which the pad actually exercises its video path (unarmed it
++  // silently ignores video). Payloads must be the console's own. CORRECTION
++  // (2026-11-04): the documented form of svc 5/0x02 is 102 bytes, but the only
++  // instance in the decrypted console session carried a ZERO-LENGTH payload -
++  // the 20-byte datagram is 8 CmdHeader + 12 GenericCmdHeader with no data. We
++  // were sending 102 zero bytes, which is a UIC write (UIC command 0x0c) and can
++  // move the pad's state out from under the arming sequence. DRC_ARM_5_02_102=1
++  // restores the old 102-zero-byte payload for comparison.
++  {
++    const char* arm = getenv("DRC_ARM_BURST");
++    if (arm && arm[0] == '1') {
++      std::vector<byte> empty;
++      std::vector<byte> zeros(102, 0);
++      std::vector<byte> ignored;
++      RunGenericCmd(cmd_client_.get(), 0, 0x00, empty, &ignored);
++      RunGenericCmd(cmd_client_.get(), 4, 0x04, empty, &ignored);
++      // MEASURED 2026-11-04: including this command in a periodic arm burst moves
++      // the pad's UIC state 0 -> 12 and it answers 9004 (unarmed) afterwards.
++      // Dropping it keeps the pad in state 0 (Active) and armed
++      // (svc 5/0x15 -> 0, backlight level readable). svc 5/0x02 is "102 bytes to
++      // UIC command 0x0c" - a UIC WRITE, and we were writing 102 zero bytes.
++      // Default is now to SKIP it; DRC_ARM_5_02=1 restores it for comparison.
++      const char* want502 = getenv("DRC_ARM_5_02");
++      if (want502 && want502[0] == '1') {
++        const char* old502 = getenv("DRC_ARM_5_02_102");
++        RunGenericCmd(cmd_client_.get(), 5, 0x02,
++                      (old502 && old502[0] == '1') ? zeros : empty, &ignored);
++      }
++      RunGenericCmd(cmd_client_.get(), 5, 0x06, empty, &ignored);
++      fprintf(stderr, "libdrc: sent the console arm burst (0/0x00, 4/0x04, "
++                      "5/0x02[102], 5/0x06)\n");
++    }
++  }
++
++  // DRC_QUIET_CMDS=1 / DRC_SEND_UIC=0 skip the UIC config query too, so the
++  // command plane can be silenced completely for A/B testing.
++  const char* quiet = getenv("DRC_QUIET_CMDS");
++  const char* uic = getenv("DRC_SEND_UIC");
++  if (!(quiet && quiet[0] == '1') && !(uic && uic[0] == '0')) {
++    SyncUICConfig();
++  }
+   return true;
+ }
+ 
+ void Streamer::Stop() {
++  panel_client_->Stop();
++  session_pusher_->Stop();
+   uvcuac_synchronizer_->Stop();
+   input_receiver_->Stop();
+   vid_streamer_->Stop();
+@@ -123,6 +208,51 @@ void Streamer::Stop() {
+   msg_server_->Stop();
+ }
+ 
++void Streamer::ResetVideoStream() {
++  vid_streamer_->ResetStreamInit();
++}
++
++void Streamer::ArmSession() {
++  // The console follows its arm burst with the 779-datagram svc 0/0x11 state
++  // push and the 0/0x12 + 4/0x21 + 4/0x1a tail. It is replayed per session
++  // because the pad starts a new session every ~80 s.
++  session_pusher_->Kick();
++  std::vector<byte> empty;
++  std::vector<byte> zeros(102, 0);
++  std::vector<byte> ignored;
++  RunGenericCmd(cmd_client_.get(), 0, 0x00, empty, &ignored);
++  RunGenericCmd(cmd_client_.get(), 4, 0x04, empty, &ignored);
++  const char* want502b = getenv("DRC_ARM_5_02");
++  if (want502b && want502b[0] == '1') {
++    const char* old502b = getenv("DRC_ARM_5_02_102");
++    RunGenericCmd(cmd_client_.get(), 5, 0x02,
++                  (old502b && old502b[0] == '1') ? zeros : empty, &ignored);
++  }
++  RunGenericCmd(cmd_client_.get(), 5, 0x06, empty, &ignored);
++  // The documented display switch: svc 5/0x08 with payload 00 is what the Home
++  // menu sends to turn the GamePad display OFF (sc-cmd.rst), so 01 is its enable.
++  // We have never sent it reliably: it is the one command between "the pad is
++  // armed and receiving video" and "the pad swaps its LCD to the H.264 feed".
++  // DRC_ARM_5_08=0 disables.
++  {
++    const char* e508 = getenv("DRC_ARM_5_08");
++    if (!(e508 && e508[0] == '0')) {
++      std::vector<byte> on(1, 0x01);
++      std::vector<byte> ignored508;
++      RunGenericCmd(cmd_client_.get(), 5, 0x08, on, &ignored508);
++    }
++  }
++}
++
++bool Streamer::SendPanelTable() {
++  byte pkt[sizeof(kPanelTable)];
++  memcpy(pkt, kPanelTable, sizeof(pkt));
++  pkt[6] = static_cast<byte>(panel_counter_ & 0xFF);
++  pkt[7] = static_cast<byte>((panel_counter_ >> 8) & 0xFF);
++  ++panel_counter_;
++  return panel_client_->Send(pkt, sizeof(pkt));
++}
++
+ void Streamer::ResyncStreamer() {
+   vid_streamer_->ResyncStream();
+ }
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/tsf-linux.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/tsf-linux.cpp
+index c1fc5c2..18c78b9 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/tsf-linux.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/tsf-linux.cpp
+@@ -26,12 +26,17 @@
+ #include <fcntl.h>
+ #include <ifaddrs.h>
+ #include <netdb.h>
++#include <cstdio>
++#include <cstdlib>
+ #include <string>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/socket.h>
+ #include <net/if.h>
+ #include <unistd.h>
++#include <time.h>
++#include <stdlib.h>
++#include <stdio.h>
+ 
+ namespace drc {
+ 
+@@ -72,10 +77,43 @@ int GetInterfaceOfIpv4(const std::string& addr, std::string* out) {
+ 
+ }  // namespace
+ 
++// Offset applied to the synthetic clock. Read from a FILE (re-checked once a
++// second) as well as the environment, so the clock can be aligned to the radio's
++// real TSF at runtime: every working implementation (wozt via rtw88_TSF, Barista
++// via a monitor-derived clock) hands the pad timestamps in the TSF domain it
++// syncs from our beacons. A synthetic epoch is the one thing that makes our
++// media unplayable no matter how correct the payload is.
++static u64 TsfOffsetUs() {
++  static u64 off = 0;
++  static u64 last_check_ms = 0;
++  struct timespec now;
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  const u64 now_ms = (u64)now.tv_sec * 1000ull + (u64)now.tv_nsec / 1000000ull;
++  if (now_ms - last_check_ms >= 1000) {
++    last_check_ms = now_ms;
++    u64 value = 0;
++    const char* e = getenv("DRC_TSF_OFFSET_US");
++    if (e) {
++      value = strtoull(e, NULL, 10);
++    }
++    FILE* f = fopen("/var/run/drc/tsf-offset-us", "r");
++    if (f) {
++      unsigned long long v = 0;
++      if (fscanf(f, "%llu", &v) == 1) value = (u64)v;
++      fclose(f);
++    }
++    off = value;
++  }
++  return off;
++}
++
+ int GetTsf(u64 *tsf) {
+   static int fd = -1;
++  static bool synthetic = false;
++  static bool warned = false;
++  static u64 synth_base_ns = 0;
+ 
+-  if (fd == -1) {
++  if (fd == -1 && !synthetic) {
+     std::string drc_if;
+ 
+     if (GetInterfaceOfIpv4("192.168.1.10", &drc_if) == 0) {
+@@ -89,11 +127,54 @@ int GetTsf(u64 *tsf) {
+     }
+ 
+     if (fd == -1) {
+-      return -1;
++      // No patched mac80211 available. DRC_SYNTHETIC_TSF=1 substitutes the
++      // monotonic clock (microseconds) so the stack can run on a radio whose
++      // driver has no get_tsf() op - e.g. iwlwifi. EXPERIMENTAL: the GamePad
++      // schedules playback against the AP's real TSF, so a synthetic clock is
++      // only usable if its epoch matches the beacon's TSF. Useful as a fallback
++      // and as a way to bring the stack up for debugging.
++      const char* env = getenv("DRC_SYNTHETIC_TSF");
++      if (env && env[0] == '1') {
++        struct timespec now;
++        clock_gettime(CLOCK_MONOTONIC, &now);
++        synth_base_ns = (u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec;
++        synthetic = true;
++        fprintf(stderr, "libdrc: no TSF sysfs node - using synthetic "
++                        "monotonic clock (DRC_SYNTHETIC_TSF=1)\n");
++      } else {
++        fprintf(stderr, "libdrc: no TSF sysfs node. Load the patched mac80211, "
++                        "or set DRC_SYNTHETIC_TSF=1 to try a synthetic clock.\n");
++        return -1;
++      }
+     }
+   }
++
++  if (synthetic) {
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    u64 now_ns = (u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec;
++    *tsf = (now_ns - synth_base_ns) / 1000ull + TsfOffsetUs();
++    return 0;
++  }
++
+   if (pread(fd, tsf, sizeof (*tsf), 0) != sizeof (*tsf)) {
+     perror("pread failed - GetTsf");
++    return -1;
++  }
++
++  /* Drivers without a .get_tsf op (e.g. iwlwifi) expose the sysfs node but return
++   * UINT64_MAX. Treat that as "unavailable" and fall back to the monotonic clock
++   * instead of stamping every frame with 0xFFFFFFFF.
++   */
++  if (*tsf == (u64)-1) {
++    static u64 base_ns = 0;
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    if (!base_ns)
++      base_ns = (u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec;
++    *tsf = (((u64)now.tv_sec * 1000000000ull + (u64)now.tv_nsec) - base_ns) / 1000ull + TsfOffsetUs();
++    if (!warned) { warned = true; fprintf(stderr, "libdrc: TSF unavailable (UINT64_MAX) - using synthetic monotonic clock\n"); }
++    return 0;
+   }
+   return 0;
+ }
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
+index bef318c..d126493 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
+@@ -59,14 +59,18 @@ bool ParseBindAddress(const std::string& bind_addr, in_addr* addr, u16* port) {
+ 
+ UdpClient::UdpClient(const std::string& dst_addr)
+     : sock_fd_(-1),
+-      dst_addr_(dst_addr) {
++      dst_addr_(dst_addr),
++      bind_port_(0),
++      priority_(0) {
+ }
+ 
+ UdpClient::~UdpClient() {
+   Stop();
+ }
+ 
+-bool UdpClient::Start() {
++bool UdpClient::Start(u16 bind_port, int priority) {
++  bind_port_ = bind_port;
++  priority_ = priority;
+   memset(&dst_addr_parsed_, 0, sizeof (dst_addr_parsed_));
+   dst_addr_parsed_.sin_family = AF_INET;
+   if (!ParseBindAddress(dst_addr_, &dst_addr_parsed_.sin_addr,
+@@ -79,6 +83,39 @@ bool UdpClient::Start() {
+     return false;
+   }
+ 
++  if (priority_ != 0) {
++    int prio = priority_;
++    setsockopt(sock_fd_, SOL_SOCKET, SO_PRIORITY, &prio, sizeof (prio));
++  }
++
++  if (bind_port_ != 0) {
++    // The console sends video-format messages and PCM audio from the same
++    // source port (50021). Two senders here share it via SO_REUSEPORT.
++    int one = 1;
++    setsockopt(sock_fd_, SOL_SOCKET, SO_REUSEPORT, &one, sizeof (one));
++    sockaddr_in src;
++    memset(&src, 0, sizeof (src));
++    src.sin_family = AF_INET;
++    src.sin_addr.s_addr = INADDR_ANY;
++    src.sin_port = htons(bind_port_);
++    if (bind(sock_fd_, reinterpret_cast<sockaddr*>(&src), sizeof (src)) == -1) {
++      close(sock_fd_);
++      sock_fd_ = -1;
++      return false;
++    }
++  }
++
++  // Non-blocking: a UDP sendto() to an unreachable or unresolved peer (a pad
++  // that just vanished, a stale ARP entry, a radio that went away) can block a
++  // blocking socket for seconds while the kernel chases the neighbour. That
++  // wedges whatever thread is sending - measured here as a 2.5 s stall in the
++  // video sender, which also delayed shutdown. With O_NONBLOCK a send either
++  // leaves immediately or reports EAGAIN and the caller decides.
++  int flags = fcntl(sock_fd_, F_GETFL, 0);
++  if (flags != -1) {
++    fcntl(sock_fd_, F_SETFL, flags | O_NONBLOCK);
++  }
++
+   return true;
+ }
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/uvcuac-synchronizer.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/uvcuac-synchronizer.cpp
+index d24f915..5ba7688 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/uvcuac-synchronizer.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/uvcuac-synchronizer.cpp
+@@ -23,7 +23,11 @@
+ // POSSIBILITY OF SUCH DAMAGE.
+ 
+ #include <algorithm>
++#include <ctime>
+ #include <drc/input.h>
++#include <drc/internal/cmd-packet.h>
++#include <cstdio>
++#include <cstdlib>
+ #include <drc/internal/uvcuac-synchronizer.h>
+ #include <vector>
+ 
+@@ -46,12 +50,131 @@ void UvcUacStateSynchronizer::Stop() {
+   StopEM();
+ }
+ 
++namespace {
++// Command-plane experiments (2026-11-04). Replaying our own captured media
++// through a bare socket - which sends NO command traffic - makes the pad stop
++// requesting keyframes entirely (0.0/s for 74 s), while the same media from our
++// streamer, which also sends these commands, leaves it asking ~59/s. So the
++// command plane is now the suspect. DRC_QUIET_CMDS=1 disables all of it;
++// individual knobs allow a bisect: DRC_SEND_UVCUAC=0 / DRC_SEND_TIME=0.
++bool EnvFlag(const char* name, bool dflt) {
++  const char* e = getenv(name);
++  if (!e) return dflt;
++  return !(e[0] == '0');
++}
++bool QuietCmds() {
++  const char* e = getenv("DRC_QUIET_CMDS");
++  return e && e[0] == '1';
++}
++
++// The real console's UVC/UAC payload, byte-for-byte, from the decrypted session
++// (out/evidence/truth/port50123.bin: 228 query-type-1 datagrams, 226 identical
++// to this). libdrc's ResetPacket() sends memset(0) plus only the mic sampling
++// rate, which differs from the console in ~10 byte positions:
++//
++//   [0]      f1            console 1 (session's first query is 0)   ours 0
++//   [6..7]   mic_volume    console 0x8000 (-32768)                   ours 0
++//   [8..9]   mic_vol2      console 0x8000 (-32768)                   ours 0
++//   [12..13] mic_freq      console 16000                             ours 16000 (ok)
++//   [17]     cam_auto_expo console 1                                 ours 0
++//   [20..23] cam_expo      console ~0x29e, varies over time          ours 0
++//   [28]     -             console 0x70                              ours 0
++//   [32..33] -             console 0x4040                            ours 0
++//   [34]     -             console 0x03                              ours 0
++//   [36]     -             console 0x2d                              ours 0
++//   [39]     wb_auto       console 1                                 ours 0
++//   [40]     -             console 0x80                              ours 0
++//   [42..43] -             console 0x40                              ours 0
++//
++// The pad answers this command (228/228 replies in the console session) and the
++// libdrc notes state recent pad firmware will not show the video stream until it
++// has received one. DRC_UVC_EXACT=1 sends the console's own bytes instead of
++// libdrc's zeros; the transmission is otherwise identical.
++const byte kConsoleUvc[48] = {
++    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
++    0x00, 0x80, 0x00, 0x00, 0x80, 0x3e, 0x00, 0x00,
++    0x00, 0x01, 0x00, 0x02, 0x9e, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00,
++    0x40, 0x40, 0x03, 0x00, 0x2d, 0x00, 0x00, 0x01,
++    0x80, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
++};
++}  // namespace
++
+ void UvcUacStateSynchronizer::InitEventsAndRun() {
+   NewRepeatedTimerEvent(1000 * 1000 * 1000, [&](Event*) {
++    // Keepalive FIRST and independent of the UVC/UAC knobs: the console queries
++    // svc 0/0x00 (LVC firmware versions) about 0.8 times a second for the WHOLE
++    // session - 230 datagrams from t=0.000 to t=298.667 in the decrypted capture.
++    // We only sent it once, inside the arm burst, and the pad powers off ~30-90 s
++    // into every one of our sessions, which never happens in a console session.
++    // This periodic query is the obvious candidate for the keepalive that holds
++    // the session (and therefore the screen) open.
++    if (EnvFlag("DRC_KEEPALIVE", true)) {
++      GenericCmdPacket keepalive;
++      keepalive.SetFlags(GenericCmdPacket::kQueryFlag);
++      keepalive.SetServiceId(0);
++      keepalive.SetMethodId(0x00);
++      std::vector<byte> empty;
++      keepalive.SetPayload(empty.data(), 0);
++      cmd_client_->AsyncQuery(CmdQueryType::kGenericCommand,
++                              keepalive.GetBytes(), keepalive.GetSize(),
++                              [](bool, const std::vector<byte>&) {});
++    }
++
++    if (QuietCmds() || !EnvFlag("DRC_SEND_UVCUAC", true)) {
++      return true;
++    }
+     std::vector<byte> drc_reply_state;
++    std::vector<byte> uvc_payload;
++    if (EnvFlag("DRC_UVC_EXACT", false)) {
++      uvc_payload.assign(kConsoleUvc, kConsoleUvc + sizeof(kConsoleUvc));
++    } else {
++      uvc_payload.assign(state_.GetBytes(),
++                         state_.GetBytes() + state_.GetSize());
++    }
+     bool success = cmd_client_->Query(CmdQueryType::kUvcUacCommand,
+-                                      state_.GetBytes(), state_.GetSize(),
++                                      uvc_payload.data(), uvc_payload.size(),
+                                       &drc_reply_state);
++    // Guard the reply decode below: the stock code dereferences d[0]..d[14]
++    // without checking the reply length.
++    if (success && drc_reply_state.size() < 15) {
++      success = false;
++    }
++    // The console also publishes its clock on the command channel (query type
++    // "time"); libdrc defines TimeCmdPacket but never sent it. The pad's session
++    // state machine can gate the display on a valid console clock, which would
++    // look exactly like "could not connect" while input and video still flow.
++    if (!QuietCmds() && EnvFlag("DRC_SEND_TIME", true)) {
++      TimeCmdPacket time_pkt;
++      // A decrypted real console session sends a4ef0000305e0000: days = 0xefa4
++      // = 61348, seconds-of-day = 24112 (advancing 1/s). 61348 is NOT
++      // days-since-2000 (that would be ~9800), so the field's epoch is unknown -
++      // and our stack has always computed the 2000-epoch value, i.e. sent a
++      // number the console never sends. If the pad derives any part of its video
++      // timebase from this command that alone would desync us.
++      // DRC_TIME_EXACT=1 replicates the console's observed value; the old
++      // behaviour stays available with DRC_TIME_EPOCH=2000.
++      const char* exact = getenv("DRC_TIME_EXACT");
++      const char* epoch = getenv("DRC_TIME_EPOCH");
++      if (exact && exact[0] == '1') {
++        time_pkt.SetDays(0xefa4);
++        long long now_s = static_cast<long long>(time(NULL));
++        time_pkt.SetSeconds(static_cast<u32>(now_s % 86400));
++      } else if (epoch && !strcmp(epoch, "2000")) {
++        const long long kE = 946684800LL;
++        long long since = static_cast<long long>(time(NULL)) - kE;
++        if (since < 0) since = 0;
++        time_pkt.SetDays(static_cast<u16>(since / 86400));
++        time_pkt.SetSeconds(static_cast<u32>(since % 86400));
++      } else {
++        time_pkt.SetDays(0xefa4);
++        time_pkt.SetSeconds(static_cast<u32>(static_cast<long long>(time(NULL)) % 86400));
++      }
++      std::vector<byte> time_reply;
++      cmd_client_->Query(CmdQueryType::kTimeCommand, time_pkt.GetBytes(),
++                         time_pkt.GetSize(), &time_reply);
++    }
++
+     if (success) {
+       const byte * d = drc_reply_state.data();
+       state_.SetMicVolume(d[0] | (d[1] << 8));
+@@ -68,6 +191,26 @@ void UvcUacStateSynchronizer::InitEventsAndRun() {
+       state_.SetCamPowerFrequency(d[13]);
+       state_.SetCamAutoExposureEnabled(d[14] != 0);
+     }
++    // DRC_UVC_LOG=1: one line per attempt. The real console gets a reply to
++    // 228/228 of these, so a stream of "FAIL" here means the pad is not
++    // accepting the documented precondition for showing video at all.
++    {
++      static const char* log_env = getenv("DRC_UVC_LOG");
++      static unsigned n_ok = 0, n_fail = 0;
++      if (log_env && log_env[0] == '1') {
++        if (success) {
++          ++n_ok;
++        } else {
++          ++n_fail;
++        }
++        fprintf(stderr,
++                "[uvcuac] %s reply=%zuB payload=%zuB exact=%d ok=%u fail=%u\n",
++                success ? "OK  " : "FAIL", drc_reply_state.size(),
++                uvc_payload.size(), EnvFlag("DRC_UVC_EXACT", false) ? 1 : 0,
++                n_ok, n_fail);
++        fflush(stderr);
++      }
++    }
+     return true;
+   });
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
+index b869799..1bb55b4 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
+@@ -24,12 +24,21 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdlib>
+ #include <drc/internal/astrm-packet.h>
+ #include <drc/internal/h264-encoder.h>
++#include <drc/internal/idr-policy.h>
++#include <drc/internal/video-packet-schedule.h>
+ #include <drc/internal/tsf.h>
+ #include <drc/internal/udp.h>
+ #include <drc/internal/video-streamer.h>
++
++#include <algorithm>
++#include <chrono>
++#include <cstdio>
++#include <cstring>
+ #include <drc/internal/vstrm-packet.h>
++#include <array>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+@@ -45,6 +54,29 @@ namespace {
+ 
+ 
+ 
++// Monotonic microseconds, used only for in-frame pacing (never for the media
++// timestamp, which must stay locked to the AP's TSF).
++u64 MonotonicNowUs() {
++  return (u64)std::chrono::duration_cast<std::chrono::microseconds>(
++             std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++
++// Per-packet send offsets for a frame, derived from the chunk sizes that
++// GenerateVstrmPackets is about to packetise. Falls back to an even spread
++// across the frame slot if the shape is unexpected.
++std::vector<u32> BuildPacketOffsets(const H264ChunkArray& chunks) {
++  std::vector<u32> offsets;
++  for (size_t c = 0; c < chunks.size(); ++c) {
++    const size_t chunk_size = std::get<1>(chunks[c]);
++    const size_t n = ChunkPacketCount(chunk_size, kMaxVstrmPayloadSize);
++    for (size_t i = 0; i < n; ++i) {
++      offsets.push_back(VideoPacketOffsetUs(c, i, n));
++    }
++  }
++  return offsets;
++}
++
+ s32 GetTimestamp() {
+   u64 tsf;
+   GetTsf(&tsf);
+@@ -55,7 +87,17 @@ void GenerateVstrmPackets(std::vector<VstrmPacket>* vstrm_packets,
+                           const H264ChunkArray& chunks, u32 timestamp,
+                           bool idr, bool* vstrm_inited, u16* vstrm_seqid,
+                           VideoFrameRate frame_rate) {
+-  // Set the init flag on the first frame ever sent.
++  // Set the init flag on the first frame of the stream, and only there.
++  //
++  // Measured against a decrypted real console session (2026-11-04,
++  // research/GROUND-TRUTH-SESSION.md sec.4): the console sets the init flag on
++  // exactly the 25 datagrams of the first frame after video starts, and never
++  // again - not on later IDRs, and not when the pad asks for a resync (it
++  // answers those with a plain IDR). An earlier round re-asserted init on every
++  // IDR to help a pad that associates late; but a pad that cannot decode asks
++  // for a resync ~60 times a second, so that marks ~16 frames/s as "the stream
++  // restarts here", which is the one signal guaranteed to stop a decoder from
++  // ever completing a frame - and it makes the failure self-sustaining.
+   bool init_flag = !*vstrm_inited;
+   if (init_flag) {
+     *vstrm_inited = true;
+@@ -104,25 +146,58 @@ void GenerateVstrmPackets(std::vector<VstrmPacket>* vstrm_packets,
+   }
+ }
+ 
+-void GenerateAstrmPacket(AstrmPacket* pkt, u32 ts) {
+-  pkt->ResetPacket();
+-  pkt->SetPacketType(AstrmPacketType::kVideoFormat);
+-  //pkt->SetTimestamp(0x00100000);
+-  pkt->SetTimestamp(0x00000000);
+-
+-  byte payload[24] = {
+-      0x00, 0x00, 0x00, 0x00,
+-      0x80, 0x3e, 0x00, 0x00,
+-      0x80, 0x3e, 0x00, 0x00,
+-      0x80, 0x3e, 0x00, 0x00,
+-      0x80, 0x3e, 0x00, 0x00,
+-      0x00, 0x00, 0x00, 0x00,
+-  };
+-  payload[0] = ts & 0xFF;
+-  payload[1] = (ts >> 8) & 0xFF;
+-  payload[2] = (ts >> 16) & 0xFF;
+-  payload[3] = (ts >> 24) & 0xFF;
+-  pkt->SetPayload(payload, sizeof (payload));
++// The console's video-format message, 32 bytes on UDP dst 50121. It is what
++// gives the pad the playback timebase for the matching video frame, and the
++// pad does not start decoding without it (measured 2026-11-04: with this port
++// firewalled off the pad stayed on its "cannot connect" screen and never sent
++// a single 50010 message; once the packets were allowed through the pad began
++// requesting frames). Layout from the real console (datasheet: "Video-format
++// message"), byte-for-byte:
++//
++//   04 00 00 00  11 11 81 08  <ts LE>  80 3e 00 00 80 3e 00 00
++//   08 52 00 00  08 52 00 00  00 00 00 00
++//
++// The outer length field is deliberately zero even though a 24-byte body
++// follows - the real console does the same. The clock fields are 16000,
++// 16000, 21000, 21000 microseconds.
++// Console source ports (datasheet / Barista port table).
++const u16 kConsoleVideoSrcPort = 50020;
++const u16 kConsoleAudioSrcPort = 50021;
++
++std::array<byte, 32> BuildVideoFormatPacket(u32 ts) {
++  std::array<byte, 32> pkt{};
++  pkt[0] = 0x04;  // video-format message type
++  // Bytes 4..7: a decrypted real console session sends 00 00 00 00 in *every*
++  // one of 14,142 format messages (2026-11-04, research/GROUND-TRUTH-SESSION.md
++  // sec.4). The datasheet value 11 11 81 08 is what Barista sends - and Barista
++  // works - so this is tolerated, but the console is zeroes, so default to
++  // zeroes. DRC_FORMAT_OUTER=11118108 restores the old bytes.
++  {
++    static const u32 kOuter = []() -> u32 {
++      const char* e = getenv("DRC_FORMAT_OUTER");
++      if (e && strlen(e) == 8) {
++        return (u32)strtoul(e, NULL, 16);
++      }
++      return 0;
++    }();
++    pkt[4] = (kOuter >> 24) & 0xFF;
++    pkt[5] = (kOuter >> 16) & 0xFF;
++    pkt[6] = (kOuter >> 8) & 0xFF;
++    pkt[7] = kOuter & 0xFF;
++  }
++  pkt[8] = ts & 0xFF;  // frame timestamp, little endian
++  pkt[9] = (ts >> 8) & 0xFF;
++  pkt[10] = (ts >> 16) & 0xFF;
++  pkt[11] = (ts >> 24) & 0xFF;
++  for (size_t off : {size_t{12}, size_t{16}}) {
++    pkt[off] = 0x80;      // 16000 us
++    pkt[off + 1] = 0x3e;
++  }
++  for (size_t off : {size_t{20}, size_t{24}}) {
++    pkt[off] = 0x08;      // 21000 us
++    pkt[off + 1] = 0x52;
++  }
++  return pkt;
+ }
+ 
+ std::unique_ptr<H264ChunkArray> AsChunkArray(
+@@ -156,7 +231,9 @@ VideoStreamer::~VideoStreamer() {
+ }
+ 
+ bool VideoStreamer::Start() {
+-  if (!astrm_client_->Start() || !vstrm_client_->Start()) {
++  // WMM voice category (5) for media, as the console's transport does.
++  if (!astrm_client_->Start(kConsoleAudioSrcPort, 5) ||
++      !vstrm_client_->Start(kConsoleVideoSrcPort, 5)) {
+     Stop();
+     return false;
+   }
+@@ -166,6 +243,14 @@ bool VideoStreamer::Start() {
+ }
+ 
+ void VideoStreamer::Stop() {
++  {
++    std::lock_guard<std::mutex> lk(send_mutex_);
++    stop_sender_ = true;
++  }
++  send_cv_.notify_all();
++  if (sender_thread_.joinable()) {
++    sender_thread_.join();
++  }
+   StopEM();
+   resync_evt_ = NULL;
+ 
+@@ -183,6 +268,11 @@ void VideoStreamer::PushH264Chunks(std::vector<std::string>&& chunks) {
+   h264_chunks_ = chunks;
+ }
+ 
++void VideoStreamer::ResetStreamInit() {
++  reset_init_.store(true);
++  ResyncStream();
++}
++
+ void VideoStreamer::ResyncStream() {
+   if (resync_evt_) {
+     resync_evt_->Trigger();
+@@ -193,6 +283,141 @@ void VideoStreamer::SetFrameRate(VideoFrameRate frame_rate) {
+   frame_rate_ = frame_rate;
+ }
+ 
++void VideoStreamer::PostJob(std::vector<byte>&& frame,
++                            std::vector<std::string>&& chunks, u32 timestamp,
++                            bool send_idr, bool format_only, u64 start_us) {
++  {
++    std::lock_guard<std::mutex> lk(send_mutex_);
++    // Two-deep mailbox: absorb one slow frame without dropping the next, but
++    // never queue more than that (an old frame is worth less than a fresh one).
++    if (jobs_.size() >= kMaxPendingJobs) {
++      jobs_.pop_front();
++      dropped_jobs_++;
++    }
++    Job job;
++    job.frame = std::move(frame);
++    job.chunks = std::move(chunks);
++    job.timestamp = timestamp;
++    job.send_idr = send_idr;
++    job.format_only = format_only;
++    job.start_us = start_us;
++    jobs_.push_back(std::move(job));
++  }
++  send_cv_.notify_one();
++}
++
++void VideoStreamer::SenderLoop() {
++  // Encoding lives here, not in the frame timer, so a slow IDR cannot push the
++  // cadence around (that was defect 2 in research/CODEC-SPEC.md 3.5).
++  bool vstrm_inited = false;
++  u16 vstrm_seqid = 0;
++  std::vector<VstrmPacket> packets;
++
++  for (;;) {
++    std::vector<byte> frame;
++    std::vector<std::string> pre_chunks;
++    u32 timestamp = 0;
++    bool send_idr = false;
++    bool format_only = false;
++    u64 start_us = 0;
++    {
++      std::unique_lock<std::mutex> lk(send_mutex_);
++      send_cv_.wait(lk, [this] { return stop_sender_ || !jobs_.empty(); });
++      if (stop_sender_) {
++        return;
++      }
++      Job job = std::move(jobs_.front());
++      jobs_.pop_front();
++      frame = std::move(job.frame);
++      pre_chunks = std::move(job.chunks);
++      timestamp = job.timestamp;
++      send_idr = job.send_idr;
++      format_only = job.format_only;
++      start_us = job.start_us;
++    }
++    if (reset_init_.exchange(false)) {
++      // new session: re-assert init on the next frame, like the console does at
++      // the start of each video stream
++      vstrm_inited = false;
++    }
++
++    // The format message goes out at the frame slot start, then the frame's
++    // datagrams follow after the console's measured lead. A decrypted real
++    // console session sends the 32-byte format message a median 5.15 ms before
++    // the matching frame's first video datagram, carrying the *same* timestamp
++    // (research/GROUND-TRUTH-SESSION.md sec.4), so the pad gets its playback
++    // slot before it has to decode anything. DRC_FORMAT_LEAD_US overrides.
++    static const u64 kFormatLeadUs = []() -> u64 {
++      const char* e = getenv("DRC_FORMAT_LEAD_US");
++      return e ? (u64)strtoull(e, NULL, 10) : (u64)5000;
++    }();
++    const std::array<byte, 32> format_pkt = BuildVideoFormatPacket(timestamp);
++    astrm_client_->Send(format_pkt.data(), format_pkt.size());
++
++    // Recovery slot: format only, no video, so no P frame is sent while the
++    // pad is still rebuilding its reference picture.
++    if (format_only) {
++      continue;
++    }
++
++    std::unique_ptr<H264ChunkArray> owned_chunks;
++    const H264ChunkArray* chunks = NULL;
++    if (!pre_chunks.empty()) {
++      owned_chunks = AsChunkArray(pre_chunks);
++      chunks = owned_chunks.get();
++    } else if (!frame.empty()) {
++      chunks = &encoder_->Encode(frame, send_idr);
++    }
++    if (chunks == NULL || chunks->empty()) {
++      continue;
++    }
++
++    std::vector<u32> offsets = BuildPacketOffsets(*chunks);
++    // The format lead shifts every datagram later by kFormatLeadUs, so the
++    // in-frame windows are compressed by the same amount: the sender must still
++    // be done inside one 16.683 ms slot, or the single-slot mailbox starts
++    // superseding frames (measured as a frame-rate drop, not a fix).
++    if (kFormatLeadUs > 0 && kFormatLeadUs < kVideoFramePeriodUs) {
++      const u64 usable = kVideoFramePeriodUs - kFormatLeadUs;
++      for (u32& off : offsets) {
++        off = static_cast<u32>(static_cast<u64>(off) * usable / kVideoFramePeriodUs);
++      }
++    }
++    packets.clear();
++    GenerateVstrmPackets(&packets, *chunks, timestamp, send_idr, &vstrm_inited,
++                         &vstrm_seqid, frame_rate_);
++
++    for (size_t i = 0; i < packets.size(); ++i) {
++      // Spread the frame's datagrams across the chunk windows instead of
++      // dumping them back to back. Overdue packets go out immediately.
++      u32 offset;
++      if (i < offsets.size()) {
++        offset = offsets[i];
++      } else {
++        offset = (u32)((u64)kVideoFramePeriodUs * i / packets.size());
++      }
++      // A shutdown request must not be delayed by the remaining pacing
++      // windows: the frame still goes out complete, just not spread.
++      const u64 due = stop_sender_
++                          ? 0
++                          : start_us + kFormatLeadUs + static_cast<u64>(offset);
++      for (;;) {
++        const u64 now = MonotonicNowUs();
++        if (now >= due) {
++          break;
++        }
++        const u64 remaining = due - now;
++        std::this_thread::sleep_for(std::chrono::microseconds(
++            remaining > 500 ? 400 : remaining));
++      }
++      if (!vstrm_client_->Send(packets[i].GetBytes(), packets[i].GetSize())) {
++        send_failures_++;
++      }
++      paced_packets_++;
++    }
++  }
++}
++
+ void VideoStreamer::InitEventsAndRun() {
+   bool resync_requested = false;
+   resync_evt_ = NewTriggerableEvent([&](Event*) {
+@@ -200,51 +425,56 @@ void VideoStreamer::InitEventsAndRun() {
+     return true;
+   });
+ 
+-  std::vector<std::string> h264_chunks;
+-  std::vector<byte> encoding_frame;
+-
+-  bool vstrm_inited = false;
+-  u16 vstrm_seqid = 0;
+-  std::vector<VstrmPacket> vstrm_packets;
+-  bool send_idr = false;
+-
+-  AstrmPacket astrm_packet;
++  // Everything video-related now happens on the sender thread; this timer is a
++  // pure 59.94 Hz producer.
++  stop_sender_ = false;
++  sender_thread_ = std::thread(&VideoStreamer::SenderLoop, this);
++
++  // Request-driven IDRs are rate-capped (see idr-policy.h): a pad that cannot
++  // decode asks 45-60 times a second, and obeying that produced a 3.3 Mbps
++  // all-IDR stream against the console's 1.67 Mbps 0-IDR one.
++  u32 min_idr_us = kMinIdrSpacingUs;
++  if (const char* e = getenv("DRC_IDR_MIN_US")) {
++    const u32 v = (u32)strtoul(e, NULL, 10);
++    if (v > 0) min_idr_us = v;
++  }
++  IdrPolicy idr_policy(min_idr_us);
++  u64 frame_index = 0;
+   s32 next_timestamp = GetTimestamp();
+   TimerEvent* timer_evt = NewTimerEvent(1, [&](Event*) {
+-    if (vstrm_inited) {
+-      astrm_client_->Send(astrm_packet.GetBytes(), astrm_packet.GetSize());
+-      for (const auto& pkt : vstrm_packets) {
+-        vstrm_client_->Send(pkt.GetBytes(), pkt.GetSize());
+-      }
+-      vstrm_packets.clear();
+-      if (send_idr && resync_requested) {
+-        resync_requested = false;
+-      }
+-    }
++    const u64 start_us = MonotonicNowUs();
+ 
+-    s32 timestamp = GetTimestamp();
+-    LatchOnCurrentChunks(&h264_chunks);
+-    LatchOnCurrentFrame(&encoding_frame);
+-    std::unique_ptr<H264ChunkArray> chunk_array;
+-    if (h264_chunks.size() > 0) {
+-      chunk_array = AsChunkArray(h264_chunks);
+-    }
+-    if (chunk_array || encoding_frame.size() > 0) {
+-      send_idr = resync_requested || !vstrm_inited;
+-      const H264ChunkArray& chunks =
+-          chunk_array ?
+-              *chunk_array : encoder_->Encode(encoding_frame, send_idr);
+-      GenerateVstrmPackets(&vstrm_packets, chunks, timestamp, send_idr,
+-                           &vstrm_inited, &vstrm_seqid, frame_rate_);
+-      GenerateAstrmPacket(&astrm_packet, timestamp);
+-
+-      vstrm_inited = true;
++    std::vector<std::string> latched_chunks;
++    std::vector<byte> latched_frame;
++    LatchOnCurrentChunks(&latched_chunks);
++    LatchOnCurrentFrame(&latched_frame);
++
++    if (latched_chunks.size() > 0 || latched_frame.size() > 0) {
++      const u32 timestamp = static_cast<u32>(GetTimestamp());
++      // A heartbeat is liveness, not a keyframe demand: see idr-policy.h.
++      const bool requested = resync_requested;
+       resync_requested = false;
++      const IdrDecision decision =
++          idr_policy.Decide(frame_index, requested, start_us);
++      ++frame_index;
++
++      if (decision == IdrDecision::kFormatOnly) {
++        PostJob(std::vector<byte>(), std::vector<std::string>(), timestamp,
++                false, true, start_us);
++      } else {
++        PostJob(std::move(latched_frame), std::move(latched_chunks), timestamp,
++                decision == IdrDecision::kIdr, false, start_us);
++      }
+     }
+ 
+-    timestamp = GetTimestamp();
+-    next_timestamp += static_cast<s32>(1000000.0/59.94);
+-    s32 delta_next = next_timestamp - timestamp;
++    const s32 now = GetTimestamp();
++    static double fps = 59.94;
++    { static bool fps_init = false;
++      if (!fps_init) { fps_init = true;
++        const char* e = getenv("DRC_FPS");
++        if (e) { double f = atof(e); if (f > 1.0 && f < 200.0) fps = f; } } }
++    next_timestamp += static_cast<s32>(1000000.0 / fps);
++    s32 delta_next = next_timestamp - now;
+     if (delta_next < 1000) {
+       delta_next = 1000;
+     }
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/vstrm-packet.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/vstrm-packet.cpp
+index 1e957c1..ab6818a 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/vstrm-packet.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/vstrm-packet.cpp
+@@ -47,9 +47,45 @@ void VstrmPacket::ResetPacket() {
+   memset(pkt_.data(), 0, pkt_.size());
+   pkt_[0] = 0xF0;  // 4 bit magic (F), 2 bit packet type (0), 2 bit seqid (0)
+   pkt_[2] = 0x08;  // Has timestamp = 1
+-  pkt_[8] = 0x83;  // "Force decoding" option, enabled on DRH vstrm messages
+-  pkt_[9] = 0x85;  // Macro blocks per row option, value set below
+-  pkt_[10] = 6;    // 6 macroblock row per chunk (6 * 5 = 480 / 16)
++  // Ext options (bytes 8..15) are rebuilt by NormalizeExtOptions() after the
++  // caller sets the IDR flag and frame rate, so they land in the console order.
++}
++
++// Rebuild the eight ext-option bytes in the order a real console puts them on
++// the wire (research/CODEC-SPEC.md 1.2b, Barista's drc-media-packet-datasheet):
++//
++//   IDR : 80 82 00 83 85 06 00 00
++//   P   : 82 00 83 85 06 00 00 00
++//
++// Upstream libdrc pre-filled pkt_[8..10] with 83 85 06 and appended 80/82 after
++// them, emitting "83 85 06 [80] 82 00" - force-decode first and the IDR marker
++// in the middle. Measured live on 2026-11-04: the pad then never starts
++// decoding (zero resync requests, pad falls back to its "cannot connect"
++// screen) even though the slice data itself is conformant.
++void VstrmPacket::NormalizeExtOptions() {
++  bool idr = false;
++  bool has_rate = false;
++  u8 rate = 0;
++
++  for (int i = 0; i < 8; ++i) {
++    if (pkt_[8 + i] == 0x80) {
++      idr = true;
++    } else if (pkt_[8 + i] == 0x82 && i < 7) {
++      has_rate = true;
++      rate = pkt_[8 + i + 1];
++    }
++  }
++
++  memset(pkt_.data() + 8, 0, 8);
++  int i = 0;
++  if (idr) {
++    pkt_[8 + i++] = 0x80;  // IDR frame marker
++  }
++  pkt_[8 + i++] = 0x82;    // 59.94 Hz frame-rate selection, with value
++  pkt_[8 + i++] = has_rate ? rate : 0x00;
++  pkt_[8 + i++] = 0x83;    // force decoding (DRH vstrm)
++  pkt_[8 + i++] = 0x85;    // macroblock-rows-per-chunk, with value
++  pkt_[8 + i++] = 0x06;    // 6 rows: 5 chunks per 480p frame
+ }
+ 
+ u16 VstrmPacket::SeqId() const {
+@@ -98,6 +134,7 @@ void VstrmPacket::SetIdrFlag(bool flag) {
+   } else {
+     ClearExtOption(0x80, false);
+   }
++  NormalizeExtOptions();
+ }
+ 
+ void VstrmPacket::SetFrameRate(VideoFrameRate framerate) {
+@@ -107,6 +144,7 @@ void VstrmPacket::SetFrameRate(VideoFrameRate framerate) {
+     byte val = static_cast<byte>(framerate);
+     SetExtOption(0x82, &val);
+   }
++  NormalizeExtOptions();
+ }
+ 
+ void VstrmPacket::SetPayload(const byte* payload, size_t size) {
+@@ -115,6 +153,7 @@ void VstrmPacket::SetPayload(const byte* payload, size_t size) {
+ 
+   pkt_[2] = InsertBits(pkt_[2], size >> 8, 0, 3);
+   pkt_[3] = size & 0xFF;
++  NormalizeExtOptions();
+ }
+ 
+ #define VSTRM_FLAG_FUNCS(FlagName, idx, pos) \

@@ -1,0 +1,86 @@
+=== build ===
+ok: /home/kali/Wiiu/out/bin/codec_probe
+
+=== 1. synthetic gradient (easy content) ===
+preset        B/frame  avg chunk  max chunk    >1400    >1694  kbps@60
+slow             1644        328       1218        0        0      789
+medium           2440        488       1486        4        0     1172
+fast             2440        488       1486        4        0     1172
+ultrafast        2250        450       1832        5        5     1080
+
+Packet budget: 1400 B paced, 1694 B hard max (kMaxVstrmPayloadSize)
+Measured: 5 chunks/frame expected (30 MB rows / 6 per chunk)
+
+=== 2. testsrc2 864x480 (moving content, ffmpeg-generated) ===
+source: /tmp/testsrc2-864x480.yuv  30 frames at 864x480
+preset        B/frame  avg chunk  max chunk    >1400    >1694  kbps@60
+slow             5665       1133       4615       32       31     2720
+medium           5686       1137       4480       32       31     2730
+fast             5686       1137       4480       32       31     2730
+ultrafast        4715        943       4311       33       31     2263
+
+Packet budget: 1400 B paced, 1694 B hard max (kMaxVstrmPayloadSize)
+Measured: 5 chunks/frame expected (30 MB rows / 6 per chunk)
+
+=== 3. real X11 desktop (idle) ===
+source: /tmp/desktop-864x480.yuv  30 frames at 864x480
+preset        B/frame  avg chunk  max chunk    >1400    >1694  kbps@60
+    slow      frame  0:  18122 B  max chunk  4065 B  chunks 5  split>1400 5
+    slow      frame  1:     99 B  max chunk    38 B  chunks 5  split>1400 0
+    slow      frame  2:     19 B  max chunk     7 B  chunks 5  split>1400 0
+    slow      frame  3:     19 B  max chunk    11 B  chunks 5  split>1400 0
+    slow      frame  4:     22 B  max chunk    13 B  chunks 5  split>1400 0
+    slow      frame  5:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    slow      frame  6:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    slow      frame  7:     10 B  max chunk     4 B  chunks 5  split>1400 0
+slow              621        124       4065        5        5      298
+    medium    frame  0:  17446 B  max chunk  3939 B  chunks 5  split>1400 5
+    medium    frame  1:    113 B  max chunk    33 B  chunks 5  split>1400 0
+    medium    frame  2:     16 B  max chunk     8 B  chunks 5  split>1400 0
+    medium    frame  3:     21 B  max chunk    13 B  chunks 5  split>1400 0
+    medium    frame  4:     23 B  max chunk    15 B  chunks 5  split>1400 0
+    medium    frame  5:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    medium    frame  6:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    medium    frame  7:     10 B  max chunk     4 B  chunks 5  split>1400 0
+medium            599        119       3939        5        5      288
+    fast      frame  0:  17446 B  max chunk  3939 B  chunks 5  split>1400 5
+    fast      frame  1:    113 B  max chunk    33 B  chunks 5  split>1400 0
+    fast      frame  2:     16 B  max chunk     8 B  chunks 5  split>1400 0
+    fast      frame  3:     21 B  max chunk    13 B  chunks 5  split>1400 0
+    fast      frame  4:     23 B  max chunk    15 B  chunks 5  split>1400 0
+    fast      frame  5:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    fast      frame  6:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    fast      frame  7:     10 B  max chunk     4 B  chunks 5  split>1400 0
+fast              599        119       3939        5        5      288
+    ultrafast frame  0:  20497 B  max chunk  4651 B  chunks 5  split>1400 5
+    ultrafast frame  1:     86 B  max chunk    29 B  chunks 5  split>1400 0
+    ultrafast frame  2:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    ultrafast frame  3:     18 B  max chunk    10 B  chunks 5  split>1400 0
+    ultrafast frame  4:     21 B  max chunk    12 B  chunks 5  split>1400 0
+    ultrafast frame  5:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    ultrafast frame  6:     10 B  max chunk     4 B  chunks 5  split>1400 0
+    ultrafast frame  7:     10 B  max chunk     4 B  chunks 5  split>1400 0
+ultrafast         698        139       4651        5        5      335
+
+Packet budget: 1400 B paced, 1694 B hard max (kMaxVstrmPayloadSize)
+Measured: 5 chunks/frame expected (30 MB rows / 6 per chunk)
+
+=== 4. does idr=true produce a real IDR? ===
+preset=slow intra_refresh=1 keyint=0
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted
+preset=slow intra_refresh=0 keyint=30
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted
+preset=medium intra_refresh=1 keyint=0
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted
+preset=medium intra_refresh=0 keyint=30
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted
+preset=ultrafast intra_refresh=1 keyint=0
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted
+preset=ultrafast intra_refresh=0 keyint=30
+  NAL_SLICE_IDR emitted:       30
+  => VERDICT: real IDRs are emitted

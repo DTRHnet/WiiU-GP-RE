@@ -1,0 +1,542 @@
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h
+new file mode 100644
+index 0000000..d5af3b0
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/idr-policy.h
+@@ -0,0 +1,101 @@
++// Keyframe (IDR) policy for the DRC link.
++//
++// The problem this solves, measured: the GamePad sends a 4-byte datagram
++// 01 00 00 00 once per frame EVEN WHEN THE PICTURE IS PERFECT - it is a
++// heartbeat, not a fault signal (wozt/libdrc 291aed6a8c noted 58/s while a
++// synthetic demo decoded cleanly). libdrc treats every one as "send me a
++// keyframe", so each frame becomes an IDR.
++//
++// Cost, measured on this host (research/CODEC-SPEC.md 2.2):
++//   normal desktop stream ...... 0.29 Mbps
++//   every frame an IDR ......... 8.57 Mbps   (17.8 kB/frame, 28x)
++// That cannot fit the link, so the pad loses more, asks more, and the picture
++// never recovers. The loop is broken by treating the message as liveness.
++//
++// Policy implemented here:
++//   * IDR on the first frame of a stream;
++//   * a proactive IDR every kProactiveIdrFrames frames (bounded self-healing);
++//   * a request-driven IDR only when the request cadence CHANGES - i.e. it
++//     arrives while the previous request was a long time ago - which is what a
++//     real "I lost the picture" request looks like;
++//   * one format-only slot after every IDR, so no P frame is sent while the
++//     receiver is still recovering (console behaviour: format+IDR, format only,
++//     format+P => a 2 x 16.683 ms IDR-to-P step).
++//
++// Pure code, no clocks: callers pass timestamps. tests/scheduler_test.cpp runs it.
++#ifndef DRC_INTERNAL_IDR_POLICY_H_
++#define DRC_INTERNAL_IDR_POLICY_H_
++
++#include <drc/types.h>
++
++namespace drc {
++
++// Proactive IDR cadence. Barista uses 60 encoded frames; a 60-frame cadence
++// costs ~1 fps and one ~40 kB IDR per second on game content.
++const u32 kProactiveIdrFrames = 60;
++
++// A heartbeat arriving sooner than this after the previous one is cadence, not
++// distress. At 59.94 fps a heartbeat lands every ~16.7 ms.
++const u32 kRequestDebounceUs = 50000;  // 50 ms ~= 3 frames
++
++enum class IdrDecision {
++  kNone,        // send a normal P frame
++  kIdr,         // send an IDR frame
++  kFormatOnly,  // send only the 32-byte format message this slot
++};
++
++class IdrPolicy {
++ public:
++  // Returns what this frame slot should carry.
++  //   frame_index   frames encoded so far in this stream, starting at 0
++  //   requested     a 01 00 00 00 datagram arrived since the last call
++  //   now_us        caller's monotonic clock, microseconds
++  IdrDecision Decide(u64 frame_index, bool requested, u64 now_us) {
++    // Recovery slot: the frame right after an IDR carries only the format
++    // message, never video.
++    if (format_only_pending_) {
++      format_only_pending_ = false;
++      return IdrDecision::kFormatOnly;
++    }
++
++    const bool first = (frame_index == 0);
++    const bool proactive = frame_index != 0 &&
++                           (frame_index % kProactiveIdrFrames) == 0;
++
++    // Debounce: a request that repeats at heartbeat cadence is liveness.
++    bool real_request = false;
++    if (requested) {
++      if (!have_request_) {
++        real_request = true;
++      } else {
++        real_request = (now_us - last_request_us_) > kRequestDebounceUs;
++      }
++      last_request_us_ = now_us;
++      have_request_ = true;
++    }
++
++    if (first || proactive || real_request) {
++      format_only_pending_ = true;
++      return IdrDecision::kIdr;
++    }
++    return IdrDecision::kNone;
++  }
++
++  // Frames still owed a recovery slot (0 or 1). For logging/tests.
++  bool format_only_pending() const { return format_only_pending_; }
++
++  void Reset() {
++    format_only_pending_ = false;
++    have_request_ = false;
++    last_request_us_ = 0;
++  }
++
++ private:
++  bool format_only_pending_ = false;
++  bool have_request_ = false;
++  u64 last_request_us_ = 0;
++};
++
++}  // namespace drc
++
++#endif  // DRC_INTERNAL_IDR_POLICY_H_
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h
+new file mode 100644
+index 0000000..cb3b333
+--- /dev/null
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-packet-schedule.h
+@@ -0,0 +1,67 @@
++// In-frame video packet scheduling for the DRC link.
++//
++// Why this exists: upstream libdrc sends every packet of a frame in one tight
++// loop. A healthy 5-chunk frame is ~5 datagrams, but an IDR is 25-40 kB, i.e.
++// 15-25 datagrams, all back to back. The real console spreads them across the
++// frame slot, and bursting is the documented cause of freezes and of decoder
++// desync (see research/CODEC-SPEC.md sections 1.4 and 3.5).
++//
++// The schedule below is measured from an authenticated real-console capture
++// (Barista's drc-media-packet-datasheet.md): chunk starts at 0/3/6/9/11 ms with
++// per-chunk completion deadlines at 2.5/5/7.5/10/13 ms. The first two chunks are
++// delivered early so the pad can start feeding its decoder; the spread avoids a
++// single large burst.
++//
++// Pure code, no sockets, no timers: tests/scheduler_test.cpp exercises it.
++#ifndef DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
++#define DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
++
++#include <cstddef>
++#include <drc/types.h>
++
++namespace drc {
++
++// One video frame slot at 59.94 Hz.
++const u32 kVideoFramePeriodUs = 16683;
++
++// Chunk start offsets within a frame, microseconds from frame start.
++const u32 kChunkStartUs[] = {0, 3000, 6000, 9000, 11000};
++// Final-packet deadline for each chunk, microseconds from frame start.
++const u32 kChunkDeadlineUs[] = {2500, 5000, 7500, 10000, 13000};
++
++const size_t kVideoChunksPerFrame = 5;
++
++// Microsecond offset, from frame start, at which packet `packet_index` of
++// `packet_count` in `chunk_index` should be sent.
++//
++// Multi-packet chunks are spread linearly across their window so that a 4 kB
++// chunk does not appear as an instantaneous burst. Single-packet chunks go out
++// at the window start.
++//
++// Returns 0 for out-of-range input rather than reading past the tables.
++inline u32 VideoPacketOffsetUs(size_t chunk_index, size_t packet_index,
++                               size_t packet_count) {
++  if (chunk_index >= kVideoChunksPerFrame) return 0;
++  const u32 start = kChunkStartUs[chunk_index];
++  const u32 end = kChunkDeadlineUs[chunk_index];
++  if (packet_count <= 1 || packet_count > 256) return start;
++  if (packet_index >= packet_count) return end;
++  const u32 span = end - start;
++  return start + (u32)((u64)span * packet_index / (packet_count - 1));
++}
++
++// True when a chunk must be split across several datagrams.
++inline bool ChunkNeedsSplitting(size_t chunk_size, size_t max_payload) {
++  return max_payload != 0 && chunk_size > max_payload;
++}
++
++// Number of datagrams a chunk occupies.
++inline size_t ChunkPacketCount(size_t chunk_size, size_t max_payload) {
++  if (max_payload == 0) return 0;
++  if (chunk_size == 0) return 0;
++  return (chunk_size + max_payload - 1) / max_payload;
++}
++
++}  // namespace drc
++
++#endif  // DRC_INTERNAL_VIDEO_PACKET_SCHEDULE_H_
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
+index f5189ae..bf1a40a 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
++++ b/libdrc-vnc/libdrc-thefloppydriver/include/drc/internal/video-streamer.h
+@@ -27,9 +27,12 @@
+ #include <drc/internal/events.h>
+ #include <drc/video-frame-rate.h>
+ #include <drc/types.h>
++#include <atomic>
++#include <condition_variable>
+ #include <memory>
+ #include <mutex>
+ #include <string>
++#include <thread>
+ #include <vector>
+ 
+ #include <cstddef>
+@@ -92,6 +95,11 @@ class VideoStreamer : public ThreadedEventMachine {
+ 
+   void SetFrameRate(VideoFrameRate frame_rate);
+ 
++  // Diagnostics for the paced sender (used by tests/streamer_smoke.cpp).
++  u64 paced_packets() const { return paced_packets_; }
++  u64 dropped_jobs() const { return dropped_jobs_; }
++  u64 send_failures() const { return send_failures_; }
++
+  protected:
+   virtual void InitEventsAndRun();
+ 
+@@ -99,6 +107,13 @@ class VideoStreamer : public ThreadedEventMachine {
+   void LatchOnCurrentFrame(std::vector<byte>* latched_frame);
+   void LatchOnCurrentChunks(std::vector<std::string>* latched_chunk);
+ 
++  // Paced sender. Runs on its own thread so that (a) encoding no longer eats
++  // the 16.683 ms frame budget and (b) each chunk's packets can be spread over
++  // its window instead of being bursted. See research/CODEC-SPEC.md 3.5.
++  void SenderLoop();
++  void PostJob(std::vector<byte>&& frame, std::vector<std::string>&& chunks,
++               u32 timestamp, bool send_idr, bool format_only, u64 start_us);
++
+   std::unique_ptr<UdpClient> astrm_client_;
+   std::unique_ptr<UdpClient> vstrm_client_;
+ 
+@@ -110,6 +125,22 @@ class VideoStreamer : public ThreadedEventMachine {
+   VideoFrameRate frame_rate_ = VideoFrameRate::k59_94Hz;
+ 
+   TriggerableEvent* resync_evt_;
++
++  // Single-slot job mailbox feeding the sender thread.
++  std::thread sender_thread_;
++  std::mutex send_mutex_;
++  std::condition_variable send_cv_;
++  std::atomic<bool> stop_sender_{false};
++  bool have_job_ = false;
++  std::vector<byte> job_frame_;
++  std::vector<std::string> job_chunks_;
++  u32 job_timestamp_ = 0;
++  bool job_send_idr_ = false;
++  bool job_format_only_ = false;
++  u64 job_start_us_ = 0;
++  std::atomic<u64> dropped_jobs_{0};
++  std::atomic<u64> paced_packets_{0};
++  std::atomic<u64> send_failures_{0};
+ };
+ 
+ }  // namespace drc
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
+index bef318c..83a33fe 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/udp.cpp
+@@ -79,6 +79,17 @@ bool UdpClient::Start() {
+     return false;
+   }
+ 
++  // Non-blocking: a UDP sendto() to an unreachable or unresolved peer (a pad
++  // that just vanished, a stale ARP entry, a radio that went away) can block a
++  // blocking socket for seconds while the kernel chases the neighbour. That
++  // wedges whatever thread is sending - measured here as a 2.5 s stall in the
++  // video sender, which also delayed shutdown. With O_NONBLOCK a send either
++  // leaves immediately or reports EAGAIN and the caller decides.
++  int flags = fcntl(sock_fd_, F_GETFL, 0);
++  if (flags != -1) {
++    fcntl(sock_fd_, F_SETFL, flags | O_NONBLOCK);
++  }
++
+   return true;
+ }
+ 
+diff --git a/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp b/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
+index b869799..bfb05d6 100644
+--- a/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
++++ b/libdrc-vnc/libdrc-thefloppydriver/src/video-streamer.cpp
+@@ -24,11 +24,18 @@
+ 
+ #include <algorithm>
+ #include <cstdio>
++#include <cstdlib>
+ #include <drc/internal/astrm-packet.h>
+ #include <drc/internal/h264-encoder.h>
++#include <drc/internal/idr-policy.h>
++#include <drc/internal/video-packet-schedule.h>
+ #include <drc/internal/tsf.h>
+ #include <drc/internal/udp.h>
+ #include <drc/internal/video-streamer.h>
++
++#include <algorithm>
++#include <chrono>
++#include <cstdio>
+ #include <drc/internal/vstrm-packet.h>
+ #include <memory>
+ #include <mutex>
+@@ -45,6 +52,29 @@ namespace {
+ 
+ 
+ 
++// Monotonic microseconds, used only for in-frame pacing (never for the media
++// timestamp, which must stay locked to the AP's TSF).
++u64 MonotonicNowUs() {
++  return (u64)std::chrono::duration_cast<std::chrono::microseconds>(
++             std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++
++// Per-packet send offsets for a frame, derived from the chunk sizes that
++// GenerateVstrmPackets is about to packetise. Falls back to an even spread
++// across the frame slot if the shape is unexpected.
++std::vector<u32> BuildPacketOffsets(const H264ChunkArray& chunks) {
++  std::vector<u32> offsets;
++  for (size_t c = 0; c < chunks.size(); ++c) {
++    const size_t chunk_size = std::get<1>(chunks[c]);
++    const size_t n = ChunkPacketCount(chunk_size, kMaxVstrmPayloadSize);
++    for (size_t i = 0; i < n; ++i) {
++      offsets.push_back(VideoPacketOffsetUs(c, i, n));
++    }
++  }
++  return offsets;
++}
++
+ s32 GetTimestamp() {
+   u64 tsf;
+   GetTsf(&tsf);
+@@ -166,6 +196,14 @@ bool VideoStreamer::Start() {
+ }
+ 
+ void VideoStreamer::Stop() {
++  {
++    std::lock_guard<std::mutex> lk(send_mutex_);
++    stop_sender_ = true;
++  }
++  send_cv_.notify_all();
++  if (sender_thread_.joinable()) {
++    sender_thread_.join();
++  }
+   StopEM();
+   resync_evt_ = NULL;
+ 
+@@ -193,6 +231,118 @@ void VideoStreamer::SetFrameRate(VideoFrameRate frame_rate) {
+   frame_rate_ = frame_rate;
+ }
+ 
++void VideoStreamer::PostJob(std::vector<byte>&& frame,
++                            std::vector<std::string>&& chunks, u32 timestamp,
++                            bool send_idr, bool format_only, u64 start_us) {
++  {
++    std::lock_guard<std::mutex> lk(send_mutex_);
++    // Single-slot mailbox. If the sender has not picked up the previous job
++    // yet, that job is superseded - an old frame is worth less than a fresh
++    // one on a 16.7 ms budget. Counted, not silent.
++    if (have_job_) {
++      dropped_jobs_++;
++    }
++    job_frame_ = std::move(frame);
++    job_chunks_ = std::move(chunks);
++    job_timestamp_ = timestamp;
++    job_send_idr_ = send_idr;
++    job_format_only_ = format_only;
++    job_start_us_ = start_us;
++    have_job_ = true;
++  }
++  send_cv_.notify_one();
++}
++
++void VideoStreamer::SenderLoop() {
++  // Encoding lives here, not in the frame timer, so a slow IDR cannot push the
++  // cadence around (that was defect 2 in research/CODEC-SPEC.md 3.5).
++  bool vstrm_inited = false;
++  u16 vstrm_seqid = 0;
++  std::vector<VstrmPacket> packets;
++  AstrmPacket astrm_packet;
++
++  for (;;) {
++    std::vector<byte> frame;
++    std::vector<std::string> pre_chunks;
++    u32 timestamp = 0;
++    bool send_idr = false;
++    bool format_only = false;
++    u64 start_us = 0;
++    {
++      std::unique_lock<std::mutex> lk(send_mutex_);
++      send_cv_.wait(lk, [this] { return stop_sender_ || have_job_; });
++      if (stop_sender_) {
++        return;
++      }
++      frame = std::move(job_frame_);
++      pre_chunks = std::move(job_chunks_);
++      timestamp = job_timestamp_;
++      send_idr = job_send_idr_;
++      format_only = job_format_only_;
++      start_us = job_start_us_;
++      job_frame_.clear();
++      job_chunks_.clear();
++      have_job_ = false;
++    }
++
++    // The format message goes out at the frame slot start, before video.
++    GenerateAstrmPacket(&astrm_packet, timestamp);
++    astrm_client_->Send(astrm_packet.GetBytes(), astrm_packet.GetSize());
++
++    // Recovery slot: format only, no video, so no P frame is sent while the
++    // pad is still rebuilding its reference picture.
++    if (format_only) {
++      continue;
++    }
++
++    std::unique_ptr<H264ChunkArray> owned_chunks;
++    const H264ChunkArray* chunks = NULL;
++    if (!pre_chunks.empty()) {
++      owned_chunks = AsChunkArray(pre_chunks);
++      chunks = owned_chunks.get();
++    } else if (!frame.empty()) {
++      chunks = &encoder_->Encode(frame, send_idr);
++    }
++    if (chunks == NULL || chunks->empty()) {
++      continue;
++    }
++
++    const std::vector<u32> offsets = BuildPacketOffsets(*chunks);
++    packets.clear();
++    GenerateVstrmPackets(&packets, *chunks, timestamp, send_idr, &vstrm_inited,
++                         &vstrm_seqid, frame_rate_);
++
++    for (size_t i = 0; i < packets.size(); ++i) {
++      // Spread the frame's datagrams across the chunk windows instead of
++      // dumping them back to back. Overdue packets go out immediately.
++      u32 offset;
++      if (i < offsets.size()) {
++        offset = offsets[i];
++      } else {
++        offset = (u32)((u64)kVideoFramePeriodUs * i / packets.size());
++      }
++      // A shutdown request must not be delayed by the remaining pacing
++      // windows: the frame still goes out complete, just not spread.
++      const u64 due = stop_sender_
++                          ? 0
++                          : start_us + static_cast<u64>(offset);
++      for (;;) {
++        const u64 now = MonotonicNowUs();
++        if (now >= due) {
++          break;
++        }
++        const u64 remaining = due - now;
++        std::this_thread::sleep_for(std::chrono::microseconds(
++            remaining > 500 ? 400 : remaining));
++      }
++      if (!vstrm_client_->Send(packets[i].GetBytes(), packets[i].GetSize())) {
++        send_failures_++;
++      }
++      paced_packets_++;
++    }
++  }
++}
++
+ void VideoStreamer::InitEventsAndRun() {
+   bool resync_requested = false;
+   resync_evt_ = NewTriggerableEvent([&](Event*) {
+@@ -200,51 +350,48 @@ void VideoStreamer::InitEventsAndRun() {
+     return true;
+   });
+ 
+-  std::vector<std::string> h264_chunks;
+-  std::vector<byte> encoding_frame;
+-
+-  bool vstrm_inited = false;
+-  u16 vstrm_seqid = 0;
+-  std::vector<VstrmPacket> vstrm_packets;
+-  bool send_idr = false;
++  // Everything video-related now happens on the sender thread; this timer is a
++  // pure 59.94 Hz producer.
++  stop_sender_ = false;
++  sender_thread_ = std::thread(&VideoStreamer::SenderLoop, this);
+ 
+-  AstrmPacket astrm_packet;
++  IdrPolicy idr_policy;
++  u64 frame_index = 0;
+   s32 next_timestamp = GetTimestamp();
+   TimerEvent* timer_evt = NewTimerEvent(1, [&](Event*) {
+-    if (vstrm_inited) {
+-      astrm_client_->Send(astrm_packet.GetBytes(), astrm_packet.GetSize());
+-      for (const auto& pkt : vstrm_packets) {
+-        vstrm_client_->Send(pkt.GetBytes(), pkt.GetSize());
+-      }
+-      vstrm_packets.clear();
+-      if (send_idr && resync_requested) {
+-        resync_requested = false;
+-      }
+-    }
++    const u64 start_us = MonotonicNowUs();
+ 
+-    s32 timestamp = GetTimestamp();
+-    LatchOnCurrentChunks(&h264_chunks);
+-    LatchOnCurrentFrame(&encoding_frame);
+-    std::unique_ptr<H264ChunkArray> chunk_array;
+-    if (h264_chunks.size() > 0) {
+-      chunk_array = AsChunkArray(h264_chunks);
+-    }
+-    if (chunk_array || encoding_frame.size() > 0) {
+-      send_idr = resync_requested || !vstrm_inited;
+-      const H264ChunkArray& chunks =
+-          chunk_array ?
+-              *chunk_array : encoder_->Encode(encoding_frame, send_idr);
+-      GenerateVstrmPackets(&vstrm_packets, chunks, timestamp, send_idr,
+-                           &vstrm_inited, &vstrm_seqid, frame_rate_);
+-      GenerateAstrmPacket(&astrm_packet, timestamp);
+-
+-      vstrm_inited = true;
++    std::vector<std::string> latched_chunks;
++    std::vector<byte> latched_frame;
++    LatchOnCurrentChunks(&latched_chunks);
++    LatchOnCurrentFrame(&latched_frame);
++
++    if (latched_chunks.size() > 0 || latched_frame.size() > 0) {
++      const u32 timestamp = static_cast<u32>(GetTimestamp());
++      // A heartbeat is liveness, not a keyframe demand: see idr-policy.h.
++      const bool requested = resync_requested;
+       resync_requested = false;
++      const IdrDecision decision =
++          idr_policy.Decide(frame_index, requested, start_us);
++      ++frame_index;
++
++      if (decision == IdrDecision::kFormatOnly) {
++        PostJob(std::vector<byte>(), std::vector<std::string>(), timestamp,
++                false, true, start_us);
++      } else {
++        PostJob(std::move(latched_frame), std::move(latched_chunks), timestamp,
++                decision == IdrDecision::kIdr, false, start_us);
++      }
+     }
+ 
+-    timestamp = GetTimestamp();
+-    next_timestamp += static_cast<s32>(1000000.0/59.94);
+-    s32 delta_next = next_timestamp - timestamp;
++    const s32 now = GetTimestamp();
++    static double fps = 59.94;
++    { static bool fps_init = false;
++      if (!fps_init) { fps_init = true;
++        const char* e = getenv("DRC_FPS");
++        if (e) { double f = atof(e); if (f > 1.0 && f < 200.0) fps = f; } } }
++    next_timestamp += static_cast<s32>(1000000.0 / fps);
++    s32 delta_next = next_timestamp - now;
+     if (delta_next < 1000) {
+       delta_next = 1000;
+     }

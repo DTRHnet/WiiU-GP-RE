@@ -1,0 +1,14 @@
+# DRC stack build manifest — 2026-11-03T18:48:43Z
+# host: Kali 2026.3  kernel 7.1.5+kali-amd64  gcc 16
+# builder image: drcbuild:20.04 (ubuntu 20.04 / gcc 9 / OpenSSL 1.0.1u)
+
+FILE                                                            BYTES  SHA256
+pc2drc/drc-hostap/hostapd/hostapd                             6557256  1b9eb6a249d7bbba
+pc2drc/drc-hostap/wpa_supplicant/wpa_supplicant               6247336  f772e67295b79acb
+pc2drc/drc-hostap/wpa_supplicant/wpa_cli                       354464  5d2f3abafa9ae8e3
+pc2drc/drc-hostap/netboot/netboot                               22336  c52a0997e5078347
+out/bin/bin/drcvncclient                                       306592  cfd10703aa60afb0
+out/libdrc/lib/libdrc.so                                       229832  d6329cb807d5ea3f
+out/x264/lib/libx264.so.140                                   1285448  f257df2dee9c3aa2
+kernel/linux-source-7.1/net/mac80211/mac80211.ko             48765336  69a380768e788c98
+kernel/tsf-kali-7.1.5.patch                                      2610  028fb732ed4501fe

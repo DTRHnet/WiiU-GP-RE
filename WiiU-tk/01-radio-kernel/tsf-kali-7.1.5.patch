@@ -1,0 +1,97 @@
+--- iface.c.orig	2026-11-03 13:39:48.348784423 -0500
++++ iface.c	2026-11-03 13:40:07.157757012 -0500
+@@ -14,6 +14,7 @@
+ #include <linux/kernel.h>
+ #include <linux/if_arp.h>
+ #include <linux/netdevice.h>
++#include <linux/device.h>
+ #include <linux/rtnetlink.h>
+ #include <linux/kcov.h>
+ #include <net/mac80211.h>
+@@ -2250,6 +2251,49 @@
+ 	}
+ }
+ 
++/*
++ * DRC patch: export the Wi-Fi Time Synchronization Function (TSF) to
++ * userland as a raw little-endian u64 at /sys/class/net/<iface>/tsf.
++ *
++ * libdrc needs the access point's hardware clock to stamp video frames so the
++ * Wii U GamePad can schedule playback; stock Linux never exposes it. Original
++ * patch by Pierre Bourdon (delroth), 2013, ported forward to 7.1.5.
++ *
++ * Fragile by design: reading this attribute may add the interface to the
++ * driver if it is not in it yet.
++ */
++static ssize_t tsf_show(struct device *dev, struct device_attribute *attr,
++			char *buf)
++{
++	struct net_device *ndev;
++	struct ieee80211_sub_if_data *sdata;
++	int need_remove = -1;
++	u64 output;
++
++	ndev = container_of(dev, struct net_device, dev);
++	if (!ndev)
++		return -EIO;
++
++	sdata = IEEE80211_DEV_TO_SUB_IF(ndev);
++	if (!sdata)
++		return -EIO;
++
++	if ((sdata->flags & IEEE80211_SDATA_IN_DRIVER) == 0) {
++		need_remove = drv_add_interface(sdata->local, sdata);
++		if (need_remove != 0)
++			return -EIO;
++	}
++
++	output = drv_get_tsf(sdata->local, sdata);
++
++	if (need_remove == 0) /* the add above was needed and succeeded */
++		drv_remove_interface(sdata->local, sdata);
++
++	memcpy(buf, &output, sizeof(output));
++	return sizeof(output);
++}
++static DEVICE_ATTR_RO(tsf);
++
+ int ieee80211_if_add(struct ieee80211_local *local, const char *name,
+ 		     unsigned char name_assign_type,
+ 		     struct wireless_dev **new_wdev, enum nl80211_iftype type,
+@@ -2419,6 +2463,13 @@
+ 			free_netdev(ndev);
+ 			return ret;
+ 		}
++
++		/* DRC patch: expose the TSF clock to userland */
++		ret = device_create_file(&ndev->dev, &dev_attr_tsf);
++		if (ret) {
++			unregister_netdevice(ndev);
++			return ret;
++		}
+ 	}
+ 
+ 	mutex_lock(&local->iflist_mtx);
+@@ -2449,6 +2500,10 @@
+ 
+ 	synchronize_rcu();
+ 
++	/* DRC patch: drop the TSF node with the interface */
++	if (sdata->dev)
++		device_remove_file(&sdata->dev->dev, &dev_attr_tsf);
++
+ 	cfg80211_unregister_wdev(&sdata->wdev);
+ 
+ 	if (!sdata->dev) {
+@@ -2509,6 +2564,11 @@
+ 							BSS_CHANGED_ARP_FILTER);
+ 
+ 		list_del(&sdata->list);
++
++		/* DRC patch: drop the TSF node with the interface */
++		if (netdev)
++			device_remove_file(&sdata->dev->dev, &dev_attr_tsf);
++
+ 		cfg80211_unregister_wdev(&sdata->wdev);
+ 
+ 		if (!netdev)
